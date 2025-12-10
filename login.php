@@ -1,184 +1,236 @@
 <?php
+session_name('admin_session');
 session_start();
-require_once '../config/db.php';
-require_once '../includes/functions.php';
+require_once dirname(__DIR__) . '/config/db.php';
 
 $error = '';
-$email = $_POST['email'] ?? '';
+
+// Nếu đã đăng nhập admin rồi thì không cho vào trang login nữa
+if (!empty($_SESSION['role']) && $_SESSION['role'] === 'admin') {
+    header("Location: dashboard.php");
+    exit;
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $email = trim($_POST['email']);
-    $password = $_POST['password'];
+    $username = trim($_POST['username'] ?? '');
+    $password = trim($_POST['password'] ?? '');
 
-    if (!$email || !$password) {
-        $error = 'Vui lòng nhập đầy đủ email/tên đăng nhập và mật khẩu!';
+    if ($username === '' || $password === '') {
+        $error = "Vui lòng nhập đầy đủ tên đăng nhập và mật khẩu!";
     } else {
-        // Tìm user theo email HOẶC username
-        $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ? OR username = ?");
-        $stmt->execute([$email, $email]);
-        $user = $stmt->fetch();
+        $stmt = $pdo->prepare("SELECT * FROM users WHERE username = ?");
+        $stmt->execute([$username]);
+        $admin = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        if ($user && password_verify($password, $user['password'])) {
-            // Lưu session với các cột CÓ THỰC SỰ TỒN TẠI
-            $_SESSION['user_id'] = $user['id'];
-            $_SESSION['username'] = $user['username'] ?? $user['email'];
-            $_SESSION['role'] = $user['role'] ?? 'user';
-
-            if (($user['role'] ?? 'user') === 'admin') {
-                header('Location: ../admin/index.php');
+        if ($admin && password_verify($password, $admin['password'])) {
+            if ($admin['role'] !== 'admin') {
+                $error = "Bạn không có quyền truy cập trang quản trị!";
+            } elseif ((int)$admin['active'] === 0) {
+                $error = "Tài khoản admin đã bị khóa!";
             } else {
-                header('Location: ../view/index.php');
+                $_SESSION['user_id']  = $admin['id'];
+                $_SESSION['username'] = $admin['username'];
+                $_SESSION['role']     = $admin['role']; // 'admin'
+
+                header("Location: dashboard.php");
+                exit;
             }
-            exit;
         } else {
-            $error = 'Email/tên đăng nhập hoặc mật khẩu không đúng!';
+            $error = "Sai tài khoản hoặc mật khẩu!";
         }
     }
 }
 ?>
-
 <!DOCTYPE html>
 <html lang="vi">
 <head>
     <meta charset="UTF-8">
+    <title>Đăng nhập quản trị - YaMy Admin</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Đăng nhập - FashionStore</title>
+
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <link rel="stylesheet"
+          href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
+
     <style>
-        body {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
+        *{box-sizing:border-box;font-family:'Segoe UI',system-ui,-apple-system,BlinkMacSystemFont,sans-serif;}
+        body{
+            min-height:100vh;
+            margin:0;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            background:radial-gradient(circle at top,#273c75,#192a56 55%,#000 100%);
+            color:#fff;
         }
-        .login-card {
-            background: white;
-            border-radius: 16px;
-            box-shadow: 0 15px 35px rgba(0,0,0,0.1);
-            overflow: hidden;
-            max-width: 420px;
-            width: 100%;
+        .login-wrapper{
+            width:100%;
+            max-width:420px;
+            padding:15px;
         }
-        .login-header {
-            background: #667eea;
-            color: white;
-            padding: 2rem;
-            text-align: center;
+        .login-card{
+            background:#0f172a;
+            border-radius:18px;
+            padding:28px 26px 26px;
+            box-shadow:0 18px 45px rgba(0,0,0,.6);
+            border:1px solid rgba(148,163,184,.35);
         }
-        .login-header h3 {
-            margin: 0;
-            font-weight: 700;
+        .login-logo{
+            width:60px;height:60px;border-radius:16px;
+            display:flex;align-items:center;justify-content:center;
+            background:rgba(15,23,42,.9);
+            box-shadow:0 0 0 1px rgba(148,163,184,.4),0 10px 25px rgba(15,23,42,.9);
+            margin:0 auto 14px;
         }
-        .login-body {
-            padding: 2rem;
+        .login-title{
+            text-align:center;
+            font-size:22px;
+            font-weight:700;
+            margin-bottom:4px;
         }
-        .form-control {
-            border-radius: 12px;
-            padding: 0.75rem 1rem;
-            border: 1px solid #ddd;
+        .login-sub{
+            text-align:center;
+            font-size:13px;
+            color:#94a3b8;
+            margin-bottom:18px;
         }
-        .form-control:focus {
-            border-color: #667eea;
-            box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
+        .form-label{
+            font-size:13px;
+            font-weight:600;
+            color:#e5e7eb;
         }
-        .btn-login {
-            background: linear-gradient(135deg, #667eea, #764ba2);
-            border: none;
-            border-radius: 12px;
-            padding: 0.75rem;
-            font-weight: 600;
-            transition: all 0.3s;
+        .input-group-text{
+            background:#020617;
+            border-radius:12px 0 0 12px;
+            border:1px solid #1f2937;
+            border-right:0;
         }
-        .btn-login:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
+        .form-control{
+            border-radius:0 12px 12px 0;
+            border:1px solid #1f2937;
+            border-left:0;
+            background:#020617;
+            color:#e5e7eb;
+            font-size:14px;
+            padding:0.65rem .85rem;
         }
-        .logo {
-            width: 60px;
-            height: 60px;
-            background: white;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin: 0 auto 1rem;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        .form-control:focus{
+            border-color:#6366f1;
+            box-shadow:0 0 0 1px rgba(99,102,241,.6);
+            background:#020617;
+            color:#e5e7eb;
+        }
+        .btn-login{
+            margin-top:10px;
+            border:none;
+            width:100%;
+            padding:.7rem 1rem;
+            border-radius:999px;
+            background:linear-gradient(135deg,#6366f1,#ec4899);
+            color:#fff;
+            font-weight:600;
+            font-size:15px;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            gap:8px;
+            box-shadow:0 10px 30px rgba(79,70,229,.55);
+            transition:.25s;
+        }
+        .btn-login:hover{
+            transform:translateY(-1px);
+            box-shadow:0 14px 40px rgba(79,70,229,.7);
+        }
+        .small-link{
+            color:#64748b;
+            font-size:12px;
+            text-decoration:none;
+        }
+        .small-link:hover{
+            color:#e5e7eb;
+            text-decoration:underline;
+        }
+        .alert{
+            font-size:13px;
+            border-radius:10px;
+            padding:.55rem .75rem;
+        }
+        .top-row{
+            display:flex;
+            justify-content:space-between;
+            align-items:center;
+            margin-bottom:6px;
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="row justify-content-center">
-            <div class="col-12">
-                <div class="login-card mx-auto">
-                    <div class="login-header">
-                        <div class="logo">
-                            <i class="fas fa-tshirt fa-2x text-primary"></i>
-                        </div>
-                        <h3>Chào mừng trở lại!</h3>
-                        <p class="mb-0 opacity-75">Đăng nhập để tiếp tục mua sắm</p>
-                    </div>
 
-                    <div class="login-body">
-                        <?php if ($error): ?>
-                            <div class="alert alert-danger alert-dismissible fade show" role="alert">
-                                <i class="fas fa-exclamation-triangle me-2"></i><?= htmlspecialchars($error) ?>
-                                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                            </div>
-                        <?php endif; ?>
+<div class="login-wrapper">
+    <div class="login-card">
+        <div class="login-logo">
+            <i class="fa-solid fa-shield-halved fa-lg text-primary"></i>
+        </div>
+        <div class="login-title">YaMy Admin</div>
+        <div class="login-sub">Đăng nhập trang quản trị hệ thống</div>
 
-                        <form method="POST">
-                            <div class="mb-3">
-                                <label class="form-label fw-semibold">Email / Tên đăng nhập</label>
-                                <div class="input-group">
-                                    <span class="input-group-text bg-light border-end-0">
-                                        <i class="fas fa-user text-muted"></i>
-                                    </span>
-                                    <input type="text" name="email" class="form-control border-start-0" 
-                                           value="<?= htmlspecialchars($email) ?>" required 
-                                           placeholder="Nhập email hoặc tên đăng nhập">
-                                </div>
-                            </div>
+        <?php if (!empty($error)): ?>
+            <div class="alert alert-danger py-2 mb-3">
+                <i class="fa-solid fa-circle-exclamation me-1"></i>
+                <?= htmlspecialchars($error, ENT_QUOTES, 'UTF-8') ?>
+            </div>
+        <?php endif; ?>
 
-                            <div class="mb-3">
-                                <label class="form-label fw-semibold">Mật khẩu</label>
-                                <div class="input-group">
-                                    <span class="input-group-text bg-light border-end-0">
-                                        <i class="fas fa-lock text-muted"></i>
-                                    </span>
-                                    <input type="password" name="password" class="form-control border-start-0" 
-                                           required placeholder="Nhập mật khẩu">
-                                </div>
-                            </div>
-
-                            <div class="d-flex justify-content-between align-items-center mb-4">
-                                <div class="form-check">
-                                    <input type="checkbox" class="form-check-input" id="remember">
-                                    <label class="form-check-label text-muted" for="remember">Ghi nhớ đăng nhập</label>
-                                </div>
-                                <a href="forgot_password.php" class="text-decoration-none small" style="color: #667eea;">
-                                    Quên mật khẩu?
-                                </a>
-                            </div>
-
-                            <button type="submit" class="btn btn-primary btn-login w-100 text-white">
-                                <i class="fas fa-sign-in-alt me-2"></i>Đăng nhập
-                            </button>
-                        </form>
-
-                        <p class="text-center mt-4 mb-0">
-                            Chưa có tài khoản? 
-                            <a href="register.php" class="fw-bold text-decoration-none" style="color: #667eea;">
-                                Đăng ký ngay
-                            </a>
-                        </p>
-                    </div>
+        <form method="post" autocomplete="off">
+            <div class="mb-3">
+                <label class="form-label">Tên đăng nhập (Admin)</label>
+                <div class="input-group">
+                    <span class="input-group-text">
+                        <i class="fa-solid fa-user-gear text-slate-300"></i>
+                    </span>
+                    <input type="text"
+                           name="username"
+                           class="form-control"
+                           placeholder="Nhập username admin"
+                           required>
                 </div>
             </div>
-        </div>
-    </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+            <div class="mb-2">
+                <div class="top-row">
+                    <label class="form-label mb-0">Mật khẩu</label>
+                </div>
+                <div class="input-group">
+                    <span class="input-group-text">
+                        <i class="fa-solid fa-lock text-slate-300"></i>
+                    </span>
+                    <input type="password"
+                           name="password"
+                           class="form-control"
+                           placeholder="Nhập mật khẩu"
+                           required>
+                </div>
+            </div>
+
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <div class="form-check mt-1">
+                    <input class="form-check-input" type="checkbox" id="remember_admin">
+                    <label class="form-check-label small text-secondary" for="remember_admin">
+                        Ghi nhớ phiên làm việc
+                    </label>
+                </div>
+                <a href="../view/login.php" class="small-link">
+                    ← Về trang đăng nhập khách
+                </a>
+            </div>
+
+            <button type="submit" class="btn-login">
+                <i class="fa-solid fa-right-to-bracket"></i>
+                Đăng nhập quản trị
+            </button>
+        </form>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
