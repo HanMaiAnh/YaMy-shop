@@ -241,13 +241,14 @@ tr:hover {background:#f9f9f9;}
 
     <!-- Filter + Keyword -->
     <form method="get" class="filter-bar" action="categories.php" id="filterForm">
+         <input type="text" name="keyword" class="filter-input" placeholder="Tìm danh mục" value="<?= htmlspecialchars($keyword, ENT_QUOTES, 'UTF-8') ?>" aria-label="Tìm kiếm theo tên">
         <select name="filter" class="filter-select" aria-label="Bộ lọc danh mục">
-            <option value="all" <?= $filter === 'all' ? 'selected' : '' ?>>-- Tất cả --</option>
+            <option value="all" <?= $filter === 'all' ? 'selected' : '' ?>>Tất cả</option>
             <option value="root" <?= $filter === 'root' ? 'selected' : '' ?>>Danh mục gốc</option>
             <option value="child" <?= $filter === 'child' ? 'selected' : '' ?>>Danh mục con</option>
         </select>
 
-        <input type="text" name="keyword" class="filter-input" placeholder="Tìm tên danh mục..." value="<?= htmlspecialchars($keyword, ENT_QUOTES, 'UTF-8') ?>" aria-label="Tìm kiếm theo tên">
+       
 
         <div class="filter-actions">
             <button type="submit" class="btn-filter">Lọc</button>

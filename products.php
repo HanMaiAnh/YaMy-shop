@@ -266,8 +266,9 @@ img.product-img{
     <div class="top-bar">
         <!-- form GET cho lọc giống các trang khác -->
         <form method="get" action="products.php" class="filter-bar" id="filterForm">
+            <input type="text" name="q" class="input" placeholder="Tìm sản phẩm " value="<?= htmlspecialchars($q, ENT_QUOTES, 'UTF-8') ?>">
             <select name="category" class="select" aria-label="Chọn danh mục">
-                <option value="0" <?= $categoryFilter==0 ? 'selected' : '' ?>>-- Tất cả sản phẩm --</option>
+                <option value="0" <?= $categoryFilter==0 ? 'selected' : '' ?>>Tất cả sản phẩm</option>
                 <?php foreach($categories as $c): ?>
                     <option value="<?= (int)$c['id'] ?>" <?= $categoryFilter==(int)$c['id'] ? 'selected' : '' ?>>
                         <?= htmlspecialchars($c['name'], ENT_QUOTES, 'UTF-8') ?>
@@ -276,14 +277,12 @@ img.product-img{
             </select>
 
             <select name="featured" class="select" aria-label="Lọc loại sản phẩm">
-                <option value="all" <?= $featuredFilter==='all' ? 'selected' : '' ?>>-- Tất cả loại --</option>
+                <option value="all" <?= $featuredFilter==='all' ? 'selected' : '' ?>>Tất cả loại</option>
                 <option value="0" <?= $featuredFilter==='0' ? 'selected' : '' ?>>Bình thường</option>
                 <option value="1" <?= $featuredFilter==='1' ? 'selected' : '' ?>>Nổi bật</option>
                 <option value="2" <?= $featuredFilter==='2' ? 'selected' : '' ?>>Giảm giá</option>
                 <option value="3" <?= $featuredFilter==='3' ? 'selected' : '' ?>>Mới</option>
             </select>
-
-            <input type="text" name="q" class="input" placeholder="Tìm theo tên " value="<?= htmlspecialchars($q, ENT_QUOTES, 'UTF-8') ?>">
 
             <button type="submit" class="btn-primary">Lọc</button>
             <button type="button" id="btnReset" class="btn-danger">Reset</button>

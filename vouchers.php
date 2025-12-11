@@ -251,6 +251,9 @@ tr:hover {background:#faf8ff;}
     </div>
 
     <form method="get" class="search-bar" action="vouchers.php" novalidate>
+        <div class="search-group">
+            <input type="text" name="q" class="input" placeholder="Tìm vouchers" value="<?= htmlspecialchars($q, ENT_QUOTES, 'UTF-8') ?>">
+        </div>
         <select name="filter" class="select-filter" onchange="this.form.submit()">
             <option value="all" <?= $filter === 'all' ? 'selected' : '' ?>>Tất cả</option>
             <option value="active" <?= $filter === 'active' ? 'selected' : '' ?>>Đang diễn ra</option>
@@ -260,7 +263,6 @@ tr:hover {background:#faf8ff;}
         </select>
 
         <div class="search-group">
-            <input type="text" name="q" class="input" placeholder="Tìm mã hoặc trạng thái" value="<?= htmlspecialchars($q, ENT_QUOTES, 'UTF-8') ?>">
             <input type="date" name="date_from" class="input date" value="<?= htmlspecialchars($date_from, ENT_QUOTES, 'UTF-8') ?>">
             <input type="date" name="date_to" class="input date" value="<?= htmlspecialchars($date_to, ENT_QUOTES, 'UTF-8') ?>">
         </div>

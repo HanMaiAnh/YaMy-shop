@@ -199,9 +199,9 @@ tr:hover{background:#f7f2ff;}
   <div class="card">
     <form method="get" action="orders.php" style="margin-bottom:12px;">
       <div class="filter-row">
-        <input type="text" name="q" class="input" placeholder="Tìm theo tên người nhận, id, hoặc trạng thái..." value="<?= htmlspecialchars($qRaw, ENT_QUOTES, 'UTF-8') ?>">
+        <input type="text" name="q" class="input" placeholder="Tìm đơn hàng" value="<?= htmlspecialchars($qRaw, ENT_QUOTES, 'UTF-8') ?>">
         <select name="status" class="select">
-          <option value="all" <?= $statusFilter === 'all' ? 'selected' : '' ?>>-- Tất cả trạng thái --</option>
+          <option value="all" <?= $statusFilter === 'all' ? 'selected' : '' ?>>Tất cả trạng thái</option>
           <?php foreach ($ALL_STATUSES as $st): ?>
             <option value="<?= htmlspecialchars($st, ENT_QUOTES, 'UTF-8') ?>" <?= $statusFilter === $st ? 'selected' : '' ?>>
               <?= htmlspecialchars($st, ENT_QUOTES, 'UTF-8') ?>

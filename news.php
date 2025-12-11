@@ -220,7 +220,7 @@ $baseKeep = $keep ? implode('&', $keep) . '&' : '';
 
         <div class="filter-bar">
             <form method="get" action="news.php">
-                <input type="text" name="q" class="filter-input" placeholder="Tìm tiêu đề, địa chỉ hoặc nội dung..."
+                <input type="text" name="q" class="filter-input" placeholder="Tìm tin tức"
                        value="<?= h($q) ?>">
 
                 <input type="date" name="date_from" class="date-input" value="<?= h($date_from) ?>">

@@ -239,8 +239,11 @@ th{background:#faf8ff;font-weight:700;color:#333;}
         <div class="filter-bar">
             <form method="get" style="display:flex;gap:8px;align-items:center;">
                 <label>
+                    <input type="text" name="q" placeholder="Tìm bình luận và đánh giá" value="<?= h($qSearch) ?>">
+                </label>
+                <label>
                     <select name="product">
-                        <option value="0">-- Tất cả sản phẩm --</option>
+                        <option value="0">Tất cả sản phẩm</option>
                         <?php foreach($products as $p): ?>
                             <option value="<?= (int)$p['id'] ?>" <?= $productFilter === (int)$p['id'] ? 'selected' : '' ?>>
                                 <?= h($p['name']) ?>
@@ -251,17 +254,13 @@ th{background:#faf8ff;font-weight:700;color:#333;}
 
                 <label>
                     <select name="rating">
-                        <option value="0">-- Tất cả đánh giá --</option>
+                        <option value="0">Tất cả đánh giá</option>
                         <option value="5" <?= $ratingFilter===5 ? 'selected' : '' ?>>5 sao</option>
                         <option value="4" <?= $ratingFilter===4 ? 'selected' : '' ?>>4 sao</option>
                         <option value="3" <?= $ratingFilter===3 ? 'selected' : '' ?>>3 sao</option>
                         <option value="2" <?= $ratingFilter===2 ? 'selected' : '' ?>>2 sao</option>
                         <option value="1" <?= $ratingFilter===1 ? 'selected' : '' ?>>1 sao</option>
                     </select>
-                </label>
-
-                <label>
-                    <input type="text" name="q" placeholder="Tìm kiếm nội dung, user, sản phẩm..." value="<?= h($qSearch) ?>">
                 </label>
 
                 <button type="submit">Lọc</button>

@@ -41,10 +41,10 @@ if ($qRaw !== '') {
     $params[] = $qLike;
 
     // Giới tính hỗ trợ: Nam / Nữ
-    if (strtolower($qRaw) === 'nam') {
+    if (mb_strtolower($qRaw, 'UTF-8') === 'nam') {
         $or[] = "sex = ?";
         $params[] = 'male';
-    } elseif (strtolower($qRaw) === 'nữ' || strtolower($qRaw) === 'nu') {
+    } elseif (mb_strtolower($qRaw, 'UTF-8') === 'nữ' || mb_strtolower($qRaw, 'UTF-8') === 'nu') {
         $or[] = "sex = ?";
         $params[] = 'female';
     }
@@ -69,7 +69,7 @@ $offset = ($page - 1) * $limit;
 $countSql = "SELECT COUNT(*) FROM users $whereSql";
 $stmt = $pdo->prepare($countSql);
 $stmt->execute($params);
-$totalUsers = $stmt->fetchColumn();
+$totalUsers = (int)$stmt->fetchColumn();
 $totalPages = max(1, ceil($totalUsers / $limit));
 
 // Lấy danh sách user
@@ -112,9 +112,16 @@ body {display:flex; background:#f5f6fa; color:#111;}
 .content{margin-left:280px;padding:30px;width:100%;}
 .page-title{font-size:26px;font-weight:700;margin-bottom:20px;}
 
+/* ROW chứa filter + nút thêm */
+.header-row{
+    display:flex;
+    justify-content:space-between;
+    align-items:flex-start;
+    gap:16px;
+    margin-bottom:18px;
+}
 .filter-row{
     display:flex; gap:12px; flex-wrap:wrap; align-items:center;
-    margin-bottom:18px;
 }
 .input, .select{
     padding:10px 14px; border-radius:8px; border:1px solid #ddd;
@@ -128,6 +135,20 @@ body {display:flex; background:#f5f6fa; color:#111;}
     padding:10px 14px; background:#f24545;color:#fff;
     border:none;border-radius:8px;font-weight:700;cursor:pointer;
 }
+
+/* nút thêm mới (màu hồng giống trang khác) */
+.btn-add{
+    display:inline-block;
+    padding:10px 16px;
+    background:#E91E63;
+    color:#fff;
+    border-radius:12px;
+    font-weight:700;
+    text-decoration:none;
+    box-shadow:0 6px 18px rgba(255,47,132,0.12);
+    transition:transform .15s ease, box-shadow .15s ease;
+}
+.btn-add:hover{ transform:translateY(-2px); box-shadow:0 10px 22px rgba(255,47,132,0.16); }
 
 table {
     width:100%; border-collapse:collapse; background:#fff;
@@ -153,7 +174,6 @@ tr:hover { background:#f9f9f9; }
     margin:3px;text-decoration:none;
 }
 .pagination a.active{background:#E91E63;}
-
 </style>
 </head>
 <body>
@@ -178,25 +198,35 @@ tr:hover { background:#f9f9f9; }
 
     <h1 class="page-title">Quản lý người dùng</h1>
 
-    <!-- 🔍 THANH TÌM KIẾM + DROPDOWN -->
-    <form method="get">
-        <div class="filter-row">
+    <!-- HEADER: bao gồm thanh tìm + dropdown (bên trái) và Nút Thêm (bên phải) -->
+    <div class="header-row">
 
-            <input type="text" name="q" class="input"
-                placeholder="Tìm theo tên đăng nhập, email, SĐT, giới tính..."
-                value="<?= htmlspecialchars($qRaw) ?>">
+        <!-- LEFT: FORM LỌC -->
+        <form method="get" style="flex:1;">
+            <div class="filter-row" style="align-items:center;">
+                <input type="text" name="q" class="input"
+                    placeholder="Tìm người dùng"
+                    value="<?= htmlspecialchars($qRaw, ENT_QUOTES, 'UTF-8') ?>">
 
-            <select name="role" class="select">
-                <option value="all" <?= $roleFilter=='all'?'selected':'' ?>>Tất cả vai trò</option>
-                <option value="User" <?= $roleFilter=='User'?'selected':'' ?>>User</option>
-                <option value="Admin" <?= $roleFilter=='Admin'?'selected':'' ?>>Admin</option>
-            </select>
+                <select name="role" class="select">
+                    <option value="all" <?= $roleFilter==='all'?'selected':'' ?>>Tất cả vai trò</option>
+                    <option value="User" <?= $roleFilter==='User'?'selected':'' ?>>User</option>
+                    <option value="Admin" <?= $roleFilter==='Admin'?'selected':'' ?>>Admin</option>
+                </select>
 
-            <button class="btn-primary">Lọc</button>
-            <button type="button" id="btnReset" class="btn-danger">Reset</button>
+                <button class="btn-primary" type="submit">Lọc</button>
+                <button type="button" id="btnReset" class="btn-danger">Reset</button>
+            </div>
+        </form>
 
-        </div>
-    </form>
+        <!-- RIGHT: NÚT THÊM (chỉ hiển thị cho admin) -->
+        <?php if (isset($_SESSION['role']) && $_SESSION['role'] === 'admin'): ?>
+            <div>
+                <a href="user_add.php" class="btn-add">+ Thêm người dùng</a>
+            </div>
+        <?php endif; ?>
+
+    </div>
 
     <!-- TABLE -->
     <table>
@@ -211,36 +241,42 @@ tr:hover { background:#f9f9f9; }
             <th>Hành động</th>
         </tr>
 
-        <?php foreach ($users as $u): ?>
-        <tr>
-            <td><?= $u['id'] ?></td>
-            <td><?= htmlspecialchars($u['username']) ?></td>
-            <td><?= htmlspecialchars($u['email']) ?></td>
-            <td><?= htmlspecialchars($u['phone']) ?></td>
+        <?php if (!empty($users)): ?>
+            <?php foreach ($users as $u): ?>
+            <tr>
+                <td><?= htmlspecialchars($u['id'], ENT_QUOTES, 'UTF-8') ?></td>
+                <td><?= htmlspecialchars($u['username'], ENT_QUOTES, 'UTF-8') ?></td>
+                <td><?= htmlspecialchars($u['email'], ENT_QUOTES, 'UTF-8') ?></td>
+                <td><?= htmlspecialchars($u['phone'], ENT_QUOTES, 'UTF-8') ?></td>
 
-            <td>
-                <?= ($u['sex']=='male'?'Nam':($u['sex']=='female'?'Nữ':'--')) ?>
-            </td>
+                <td>
+                    <?= ($u['sex']=='male'?'Nam':($u['sex']=='female'?'Nữ':'--')) ?>
+                </td>
 
-            <td><?= htmlspecialchars($u['role']) ?></td>
+                <td><?= htmlspecialchars($u['role'], ENT_QUOTES, 'UTF-8') ?></td>
 
-            <td>
-                <?= ($u['active']==1
-                    ? '<span class="status-active">Hoạt động</span>'
-                    : '<span class="status-locked">Khoá</span>'
-                ) ?>
-            </td>
+                <td>
+                    <?= ($u['active']==1
+                        ? '<span class="status-active">Hoạt động</span>'
+                        : '<span class="status-locked">Khoá</span>'
+                    ) ?>
+                </td>
 
-            <td><a class="btn-edit" href="user_detail.php?id=<?= $u['id'] ?>">Chi tiết</a></td>
-        </tr>
-        <?php endforeach; ?>
+                <td><a class="btn-edit" href="user_detail.php?id=<?= urlencode($u['id']) ?>">Chi tiết</a></td>
+            </tr>
+            <?php endforeach; ?>
+        <?php else: ?>
+            <tr>
+                <td colspan="8">Không có người dùng nào.</td>
+            </tr>
+        <?php endif; ?>
 
     </table>
 
     <!-- PAGINATION -->
     <div class="pagination">
         <?php for($i = 1; $i <= $totalPages; $i++): ?>
-            <a href="?q=<?= urlencode($qRaw) ?>&role=<?= $roleFilter ?>&page=<?= $i ?>"
+            <a href="?q=<?= urlencode($qRaw) ?>&role=<?= urlencode($roleFilter) ?>&page=<?= $i ?>"
                 class="<?= ($i==$page)?'active':'' ?>">
                 <?= $i ?>
             </a>

@@ -36,6 +36,14 @@ try {
     // Mã đơn dạng DH00001
     $orderCode = 'DH' . str_pad((string)$order['id'], 5, '0', STR_PAD_LEFT);
 
+    // ====== Lấy thông tin khách hàng (nếu có user_id) ======
+    $customer = null;
+    if (!empty($order['user_id'])) {
+        $stmtUser = $conn->prepare("SELECT id, username, fullname, email, phone FROM users WHERE id = :id LIMIT 1");
+        $stmtUser->execute([':id' => $order['user_id']]);
+        $customer = $stmtUser->fetch(PDO::FETCH_ASSOC) ?: null;
+    }
+
     /*
      * Lấy các item trong đơn
      * - LEFT JOIN product_variants (variant có thể null)
@@ -334,6 +342,23 @@ body{display:flex;background:var(--bg-main);color:var(--text-color);}
     font-weight:500;
 }
 
+/* CHI TIẾT KHÁCH HÀNG LINK */
+.customer-link{
+    display:inline-block;
+    margin-top:12px;
+    color:#7b4cf0;
+    font-weight:700;
+    text-decoration:none;
+    font-size:14px;
+}
+.customer-link.disabled{
+    color:#999;
+    pointer-events:none;
+    cursor:default;
+    text-decoration:none;
+}
+
+/* table */
 .table-wrapper{
     margin-top:10px;
     border-radius:14px;
@@ -474,6 +499,16 @@ tr:hover{background:var(--hover-color);}
                 </div>
             </div>
         </div>
+
+        <!--CHI TIẾT KHÁCH HÀNG-->
+        <?php if ($customer): ?>
+            <a href="user_detail.php?id=<?= urlencode($customer['id']) ?>" class="customer-link">
+                Chi tiết khách hàng — <?= htmlspecialchars($customer['fullname'] ?? $customer['username'] , ENT_QUOTES, 'UTF-8') ?>
+            </a>
+        <?php else: ?>
+            <span class="customer-link disabled">Chi tiết khách hàng</span>
+        <?php endif; ?>
+
     </div>
 
     <!-- DANH SÁCH SẢN PHẨM -->
