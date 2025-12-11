@@ -1,497 +1,581 @@
 <?php
-// view/order_detail.php
+ini_set('session.cookie_path', '/');
+session_name('admin_session');
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
-ob_start();
-session_start();
-
-ini_set('display_errors', 1);
-error_reporting(E_ALL);
-
-// Kết nối DB & helper
-require_once dirname(__DIR__) . '/config/db.php';
-require_once dirname(__DIR__) . '/includes/functions.php';
-
-// Header chung
-include_once dirname(__DIR__) . '/includes/header.php';
-
-// Kiểm tra login
-if (empty($_SESSION['user_id'])) {
-    header('Location: login.php');
+/* ====== CHECK ADMIN ====== */
+if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'admin') {
+    header("Location: ../view/login.php");
     exit;
 }
 
-// Lấy order_id từ URL
-$order_id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
-if ($order_id <= 0) {
-    echo '<div class="container py-5"><div class="alert alert-warning">Không tìm thấy đơn hàng.</div></div>';
-    include dirname(__DIR__) . '/includes/footer.php';
-    ob_end_flush();
-    exit;
-}
+try {
+    require_once __DIR__ . '/../config/db.php';
+    $conn = $pdo; // từ db.php
 
-// Lấy thông tin đơn hàng (chỉ lấy đơn của user hiện tại)
-$stmt = $pdo->prepare("
-    SELECT *
-    FROM orders
-    WHERE id = ? AND user_id = ?
-");
-$stmt->execute([$order_id, (int)$_SESSION['user_id']]);
-$order = $stmt->fetch(PDO::FETCH_ASSOC);
+    // Lấy id đơn hàng (validate)
+    if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
+        header("Location: orders.php");
+        exit;
+    }
+    $orderId = (int)$_GET['id'];
 
-if (!$order) {
-    echo '<div class="container py-5"><div class="alert alert-warning">Đơn hàng không tồn tại hoặc không thuộc về bạn.</div></div>';
-    include dirname(__DIR__) . '/includes/footer.php';
-    ob_end_flush();
-    exit;
-}
+    // ====== THÔNG TIN ĐƠN HÀNG ======
+    $sqlOrder = "SELECT * FROM orders WHERE id = :id LIMIT 1";
+    $stmt = $conn->prepare($sqlOrder);
+    $stmt->execute([':id' => $orderId]);
+    $order = $stmt->fetch(PDO::FETCH_ASSOC);
 
-/* ============================
-   XỬ LÝ TRẠNG THÁI
-============================ */
-$status_raw  = (string)($order['status'] ?? '');
-$status_norm = mb_strtolower(trim($status_raw), 'UTF-8');
-
-// Các trạng thái được xem là "ĐÃ GIAO HÀNG" => cho phép đánh giá + bình luận
-$delivered_statuses = [
-    'completed',
-    'đã giao hàng',
-    'da giao hang',
-    'đã giao',
-    'da giao',
-    'delivered',
-    'shipped'
-];
-
-$can_comment = in_array($status_norm, $delivered_statuses, true);
-
-// Các trạng thái CHO PHÉP HỦY (chưa giao cho đơn vị vận chuyển)
-$cancelable_statuses = [
-    'pending',
-    'chờ xác nhận',
-    'cho xac nhan',
-    'processing',
-    'đang xử lý',
-    'dang xu ly',
-    'confirmed',
-    'đã xác nhận',
-    'da xac nhan',
-    'chuẩn bị giao',
-    'chuan bi giao'
-];
-
-// Có thể hủy theo trạng thái hiện tại hay không (để hiển thị nút)
-$can_cancel = in_array($status_norm, $cancelable_statuses, true);
-
-/* ============================
-   XỬ LÝ SUBMIT HỦY ĐƠN
-============================ */
-if ($_SERVER['REQUEST_METHOD'] === 'POST'
-    && isset($_POST['action'])
-    && $_POST['action'] === 'cancel_order'
-) {
-    // Kiểm tra lại trong DB xem đơn còn trạng thái cho phép hủy không
-    $stmtCheck = $pdo->prepare("
-        SELECT status
-        FROM orders
-        WHERE id = ? AND user_id = ?
-        LIMIT 1
-    ");
-    $stmtCheck->execute([$order_id, (int)$_SESSION['user_id']]);
-    $rowOrder = $stmtCheck->fetch(PDO::FETCH_ASSOC);
-
-    if (!$rowOrder) {
-        $_SESSION['error'] = 'Không tìm thấy đơn hàng hoặc không thuộc về bạn.';
-        header('Location: order_history.php');
+    if (!$order) {
+        echo "<p style='color:red;text-align:center;margin-top:50px;'>Không tìm thấy đơn hàng.</p>";
         exit;
     }
 
-    $statusDbNorm = mb_strtolower(trim($rowOrder['status'] ?? ''), 'UTF-8');
+    // Mã đơn dạng DH00001
+    $orderCode = 'DH' . str_pad((string)$order['id'], 5, '0', STR_PAD_LEFT);
 
-    if (!in_array($statusDbNorm, $cancelable_statuses, true)) {
-        $_SESSION['error'] = 'Đơn hàng đã được chuyển sang trạng thái đang giao / đã giao nên không thể hủy.';
-        header('Location: order_detail.php?id=' . $order_id);
-        exit;
+    // ====== Lấy thông tin khách hàng (nếu có user_id) ======
+    $customer = null;
+    if (!empty($order['user_id'])) {
+        $stmtUser = $conn->prepare("SELECT id, username, fullname, email, phone FROM users WHERE id = :id LIMIT 1");
+        $stmtUser->execute([':id' => $order['user_id']]);
+        $customer = $stmtUser->fetch(PDO::FETCH_ASSOC) ?: null;
     }
 
-    // Cập nhật trạng thái sang "Đã hủy"
-    $stmtUpdate = $pdo->prepare("
-        UPDATE orders
-        SET status = 'Đã hủy'
-        WHERE id = ? AND user_id = ?
-        LIMIT 1
-    ");
-    $stmtUpdate->execute([$order_id, (int)$_SESSION['user_id']]);
-
-    $_SESSION['success'] = 'Hủy đơn hàng thành công.';
-    header('Location: order_detail.php?id=' . $order_id);
-    exit;
-}
-
-/* ============================
-   XỬ LÝ SUBMIT ĐÁNH GIÁ + BÌNH LUẬN
-   -> LƯU VÀO BẢNG `reviews`
-============================ */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['comment_product_id'])) {
-    $product_id = (int)($_POST['comment_product_id'] ?? 0);
-    $comment    = trim($_POST['comment'] ?? '');
-    $rating     = isset($_POST['rating']) ? (int)$_POST['rating'] : 0;
-
-    if (!$can_comment) {
-        $_SESSION['error'] = 'Bạn chỉ có thể đánh giá/bình luận khi đơn hàng đã được giao.';
-        header('Location: order_detail.php?id=' . $order_id);
-        exit;
-    }
-
-    if ($product_id <= 0 || $comment === '') {
-        $_SESSION['error'] = 'Nội dung bình luận không hợp lệ.';
-        header('Location: order_detail.php?id=' . $order_id);
-        exit;
-    }
-
-    if ($rating < 1 || $rating > 5) {
-        $_SESSION['error'] = 'Số sao không hợp lệ.';
-        header('Location: order_detail.php?id=' . $order_id);
-        exit;
-    }
-
-    // Kiểm tra sản phẩm có thuộc đơn hàng này không
-    $stmtCheck = $pdo->prepare("
-        SELECT 1 FROM order_details
-        WHERE order_id = ? AND product_id = ?
-        LIMIT 1
-    ");
-    $stmtCheck->execute([$order_id, $product_id]);
-    if (!$stmtCheck->fetchColumn()) {
-        $_SESSION['error'] = 'Sản phẩm không thuộc đơn hàng này, không thể đánh giá.';
-        header('Location: order_detail.php?id=' . $order_id);
-        exit;
-    }
-
-    // Kiểm tra user đã có review cho sản phẩm này chưa (bảng reviews)
-    $stmtExist = $pdo->prepare("
-        SELECT id FROM reviews
-        WHERE user_id = ? AND product_id = ?
-        LIMIT 1
-    ");
-    $stmtExist->execute([(int)$_SESSION['user_id'], $product_id]);
-    $review_id = $stmtExist->fetchColumn();
-
-    if ($review_id) {
-        // Cập nhật review
-        $stmtUpdate = $pdo->prepare("
-            UPDATE reviews
-            SET content = ?, rating = ?, created_at = NOW()
-            WHERE id = ?
-        ");
-        $stmtUpdate->execute([$comment, $rating, $review_id]);
-        $_SESSION['success'] = 'Cập nhật đánh giá thành công.';
-    } else {
-        // Thêm review mới
-        $stmtInsert = $pdo->prepare("
-            INSERT INTO reviews (product_id, user_id, rating, content, created_at)
-            VALUES (?, ?, ?, ?, NOW())
-        ");
-        $stmtInsert->execute([
-            $product_id,
-            (int)$_SESSION['user_id'],
-            $rating,
-            $comment
-        ]);
-        $_SESSION['success'] = 'Gửi đánh giá thành công.';
-    }
-
-    header('Location: order_detail.php?id=' . $order_id);
-    exit;
-}
-
-/* ============================
-   LẤY CHI TIẾT SẢN PHẨM TRONG ĐƠN
-============================ */
-$stmt = $pdo->prepare("
-    SELECT 
-        od.*, 
-        p.name AS product_name,
-        (
-            SELECT pi.image_url
-            FROM product_images pi
-            WHERE pi.product_id = p.id
-            ORDER BY pi.id ASC
-            LIMIT 1
-        ) AS product_image
-    FROM order_details od
-    LEFT JOIN products p ON od.product_id = p.id
-    WHERE od.order_id = ?
-");
-$stmt->execute([$order_id]);
-$items = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-/* ============================
-   LẤY REVIEW CỦA USER (NẾU CÓ) TỪ BẢNG `reviews`
-============================ */
-$user_comments = [];
-if (!empty($items)) {
-    $product_ids   = array_column($items, 'product_id');
-    $placeholders  = implode(',', array_fill(0, count($product_ids), '?'));
-
-    $sqlComments = "
-        SELECT product_id, rating, content AS comment
-        FROM reviews
-        WHERE user_id = ?
-          AND product_id IN ($placeholders)
+    /*
+     * Lấy các item trong đơn
+     * - LEFT JOIN product_variants (variant có thể null)
+     * - Lấy product bằng COALESCE(pv.product_id, od.product_id)
+     * - Lấy size & color từ product_variants (pv.size_id, pv.color_id)
+     * - Lấy 1 ảnh đại diện từ product_images.image_url
+     */
+    $sqlItems = "
+        SELECT 
+            od.*,
+            p.id                      AS product_id,
+            p.name                    AS product_name,
+            pv.id                     AS variant_id,
+            pv.price                  AS variant_price,
+            pv.price_reduced          AS variant_price_reduced,
+            s.name                    AS size_name,
+            c.name                    AS color_name,
+            pi.image_url              AS product_image
+        FROM order_details od
+        LEFT JOIN product_variants pv ON od.variant_id = pv.id
+        LEFT JOIN products p ON p.id = COALESCE(pv.product_id, od.product_id)
+        LEFT JOIN sizes s ON pv.size_id = s.id
+        LEFT JOIN colors c ON pv.color_id = c.id
+        LEFT JOIN (
+            SELECT product_id, MIN(image_url) AS image_url
+            FROM product_images
+            GROUP BY product_id
+        ) pi ON pi.product_id = p.id
+        WHERE od.order_id = :order_id
+        ORDER BY od.id ASC
     ";
-    $params  = array_merge([(int)$_SESSION['user_id']], $product_ids);
-    $stmtCmt = $pdo->prepare($sqlComments);
-    $stmtCmt->execute($params);
 
-    while ($row = $stmtCmt->fetch(PDO::FETCH_ASSOC)) {
-        $pid = (int)$row['product_id'];
-        $user_comments[$pid] = [
-            'rating'  => (int)($row['rating'] ?? 0),
-            'comment' => $row['comment'] ?? ''
-        ];
+    $stmtItems = $conn->prepare($sqlItems);
+    $stmtItems->execute([':order_id' => $orderId]);
+    $items = $stmtItems->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+    // Tổng tiền từ cột total (đã lưu trong orders) - dùng để hiển thị "tổng trong đơn"
+    $orderTotal = (float)($order['total'] ?? 0);
+
+    // --- Chuẩn bị statement tìm variant fallback ---
+    $findVariantStmt = $conn->prepare("
+        SELECT id, product_id, size_id, color_id, price, price_reduced
+        FROM product_variants
+        WHERE product_id = :product_id
+        ORDER BY (price_reduced IS NOT NULL) DESC, ABS(COALESCE(price_reduced, price) - :order_price) ASC
+        LIMIT 1
+    ");
+
+    // Chuẩn hóa items: tính line total, chuẩn hóa img src, tìm fallback variant nếu cần
+    $calcTotal = 0.0;
+    foreach ($items as $k => $it) {
+        $qty = (int)($it['quantity'] ?? 0);
+        // Giá lưu trong order_details là giá khách trả (đơn giá thực tế)
+        $unitPrice = (float)($it['price'] ?? 0);
+        $lineTotal = $qty * $unitPrice;
+        $calcTotal += $lineTotal;
+
+        // Nếu pv không join (variant_id null), cố gắng tìm variant fallback theo product_id + giá
+        $variant_id = isset($it['variant_id']) && $it['variant_id'] ? $it['variant_id'] : null;
+
+        if (empty($variant_id)) {
+            $productId = $it['product_id'] ?? null;
+            if (!empty($productId)) {
+                $findVariantStmt->execute([
+                    ':product_id' => $productId,
+                    ':order_price' => $unitPrice
+                ]);
+                $pv = $findVariantStmt->fetch(PDO::FETCH_ASSOC);
+                if ($pv) {
+                    $variant_id = $pv['id'];
+                    // lấy tên size & color nếu có
+                    $sizeName = '-';
+                    $colorName = '-';
+                    if (!empty($pv['size_id'])) {
+                        $sstmt = $conn->prepare("SELECT name FROM sizes WHERE id = :id LIMIT 1");
+                        $sstmt->execute([':id' => $pv['size_id']]);
+                        $sr = $sstmt->fetch(PDO::FETCH_ASSOC);
+                        $sizeName = $sr['name'] ?? '-';
+                    }
+                    if (!empty($pv['color_id'])) {
+                        $cstmt = $conn->prepare("SELECT name FROM colors WHERE id = :id LIMIT 1");
+                        $cstmt->execute([':id' => $pv['color_id']]);
+                        $cr = $cstmt->fetch(PDO::FETCH_ASSOC);
+                        $colorName = $cr['name'] ?? '-';
+                    }
+                    // gán fallback values
+                    $items[$k]['variant_id'] = $pv['id'];
+                    $items[$k]['_variant_price'] = (float)$pv['price'];
+                    $items[$k]['_variant_price_reduced'] = (float)$pv['price_reduced'];
+                    $items[$k]['_size_name'] = $sizeName;
+                    $items[$k]['_color_name'] = $colorName;
+                } else {
+                    // no variant found -> fallback from joined fields or '-'
+                    $items[$k]['_size_name'] = $it['size_name'] ?? '-';
+                    $items[$k]['_color_name'] = $it['color_name'] ?? '-';
+                    $items[$k]['_variant_price'] = $items[$k]['_variant_price_reduced'] = 0.0;
+                }
+            } else {
+                $items[$k]['_size_name'] = $it['size_name'] ?? '-';
+                $items[$k]['_color_name'] = $it['color_name'] ?? '-';
+                $items[$k]['_variant_price'] = $items[$k]['_variant_price_reduced'] = 0.0;
+            }
+        } else {
+            // variant existed in join: copy variant fields if any
+            $items[$k]['_variant_price'] = isset($it['variant_price']) ? (float)$it['variant_price'] : 0.0;
+            $items[$k]['_variant_price_reduced'] = isset($it['variant_price_reduced']) ? (float)$it['variant_price_reduced'] : 0.0;
+            $items[$k]['_size_name'] = $it['size_name'] ?? '-';
+            $items[$k]['_color_name'] = $it['color_name'] ?? '-';
+        }
+
+        // Ảnh: xử lý đường dẫn (nếu product_image empty => no-image.png)
+        $imgFile = trim((string)($it['product_image'] ?? ''));
+        if ($imgFile === '') {
+            $imgSrc = '../uploads/no-image.png';
+        } else {
+            // Nếu đã lưu 'uploads/...' hoặc '/uploads/...' thì chuẩn hóa
+            if (strpos($imgFile, 'uploads/') !== false || strpos($imgFile, '/uploads/') !== false) {
+                $imgSrc = (strpos($imgFile, '../') === 0) ? $imgFile : ('../' . ltrim($imgFile, '/'));
+            } else {
+                // nếu chỉ tên file -> ghép vào ../uploads/
+                $imgSrc = '../uploads/' . str_replace(' ', '%20', $imgFile);
+            }
+        }
+
+        // lưu các trường tiện dùng trong template
+        $items[$k]['_img_src'] = $imgSrc;
+        $items[$k]['_qty'] = $qty;
+        $items[$k]['_unit_price'] = $unitPrice;
+        $items[$k]['_line_total'] = $lineTotal;
     }
+
+    // ====== TRẠNG THÁI ĐƠN HÀNG (map sang tiếng Việt + badge) ======
+    $statusRaw   = $order['status'] ?? 'pending';
+    $statusText  = $statusRaw;
+    $badgeClass  = 'badge-pending';
+
+    switch (mb_strtolower($statusRaw)) {
+        case 'pending':
+        case 'chờ xác nhận':
+            $statusText = 'Chờ xác nhận';
+            $badgeClass = 'badge-pending';
+            break;
+        case 'processing':
+        case 'đang xử lý':
+        case 'dang xu ly':
+            $statusText = 'Đang xử lý';
+            $badgeClass = 'badge-processing';
+            break;
+        case 'shipping':
+        case 'đơn hàng đang được giao':
+            $statusText = 'Đơn hàng đang được giao';
+            $badgeClass = 'badge-shipping';
+            break;
+        case 'completed':
+        case 'đã giao hàng':
+            $statusText = 'Đã giao hàng';
+            $badgeClass = 'badge-completed';
+            break;
+        case 'cancelled':
+        case 'hủy đơn hàng':
+        case 'đã hủy':
+            $statusText = 'Đã hủy đơn hàng';
+            $badgeClass = 'badge-cancel';
+            break;
+        default:
+            $statusText = $statusRaw;
+            $badgeClass = 'badge-pending';
+            break;
+    }
+
+    // ====== PHƯƠNG THỨC THANH TOÁN ======
+    $paymentRaw = $order['payment_method'] ?? 'cod';
+    $paymentText = $paymentRaw;
+
+    switch (mb_strtolower($paymentRaw)) {
+        case 'cod':
+            $paymentText = 'Thanh toán khi nhận hàng (COD)';
+            break;
+        case 'vnpay':
+            $paymentText = 'Thanh toán qua VNPay';
+            break;
+        default:
+            $paymentText = $paymentRaw;
+            break;
+    }
+
+} catch (PDOException $e) {
+    echo "<p style='color:red;'>Lỗi kết nối: " . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8') . "</p>";
+    exit;
 }
-
-// mapping phương thức thanh toán
-$payment_map = [
-    'cod'  => 'Thanh toán khi nhận hàng (COD)',
-    'momo' => 'MoMo',
-    'vnpay'=> 'VNPay',
-    'bank' => 'Chuyển khoản ngân hàng'
-];
-
-$payment_code  = $order['payment_method'] ?? 'cod';
-$payment_label = $payment_map[$payment_code] ?? strtoupper($payment_code);
-
-// Tổng tiền (dùng cột total trong orders nếu đã lưu)
-$order_total = isset($order['total']) ? (float)$order['total'] : 0;
-
-// Flash message
-$successMsg = $_SESSION['success'] ?? '';
-$errorMsg   = $_SESSION['error'] ?? '';
-unset($_SESSION['success'], $_SESSION['error']);
 ?>
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Chi tiết đơn hàng <?= htmlspecialchars($orderCode, ENT_QUOTES, 'UTF-8') ?></title>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
 <style>
-.review-box {
-    margin-top: 15px;
-    padding-top: 15px;
-    border-top: 1px solid #eee;
+/* CSS giữ nguyên phong cách trước đó */
+*{margin:0;padding:0;box-sizing:border-box;font-family:'Montserrat',sans-serif;}
+:root{
+    --bg-main:#f7f5ff;
+    --bg-sidebar:#ffffff;
+    --card-bg:#ffffff;
+    --text-color:#222;
+    --border-color:#e0d7ff;
+    --hover-color:#f5f0ff;
+}
+body{display:flex;background:var(--bg-main);color:var(--text-color);}
+
+/* SIDEBAR */
+.sidebar{
+    width:260px;
+    background:#fff;
+    height:100vh;
+    padding:30px 20px;
+    position:fixed;
+    border-right:1px solid #ddd;
+}
+.sidebar h3{
+    font-size:22px;
+    font-weight:700;
+    margin-bottom:25px;
+}
+.sidebar a{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:12px;
+    color:#333;
+    text-decoration:none;
+    border-radius:8px;
+    margin-bottom:8px;
+    transition:.25s;
+    font-weight:500;
+    font-size:15px;
+}
+.sidebar a:hover{
+    background:#f2e8ff;
+    color:#8E5DF5;
+    transform:translateX(4px);
+}
+.sidebar .logout{
+    color:#e53935;
+    margin-top:20px;
 }
 
-.star-rating {
-    direction: rtl;
-    display: inline-flex;
-    font-size: 20px;
-    cursor: pointer;
+.content{margin-left:280px;padding:30px;width:100%;}
+.page-title{font-size:26px;font-weight:700;margin-bottom:10px;}
+.breadcrumb{font-size:13px;color:#777;margin-bottom:20px;}
+.breadcrumb a{color:#8E5DF5;text-decoration:none;}
+
+.card{
+    background:var(--card-bg);
+    border-radius:16px;
+    padding:20px 22px;
+    margin-bottom:20px;
+    box-shadow:0 4px 10px rgba(0,0,0,0.05);
+}
+.card-header{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    margin-bottom:16px;
+}
+.card-header h2{
+    font-size:18px;
+    font-weight:600;
+}
+.badge-status{
+    padding:6px 12px;
+    border-radius:999px;
+    font-size:13px;
+}
+.badge-pending{background:#fff5d7;color:#b38300;}
+.badge-processing{background:#e5f3ff;color:#005c99;}
+.badge-shipping{background:#e3ffe7;color:#1b8b42;}
+.badge-completed{background:#e0ffec;color:#1b8b42;}
+.badge-cancel{background:#ffe6e6;color:#b3261e;}
+
+.info-grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
+    gap:12px 20px;
+}
+.info-item-title{
+    font-size:12px;
+    text-transform:uppercase;
+    color:#888;
+    margin-bottom:4px;
+}
+.info-item-value{
+    font-size:14px;
+    font-weight:500;
 }
 
-.star-rating input {
-    display: none;
+/* CHI TIẾT KHÁCH HÀNG LINK */
+.customer-link{
+    display:inline-block;
+    margin-top:12px;
+    color:#7b4cf0;
+    font-weight:700;
+    text-decoration:none;
+    font-size:14px;
+}
+.customer-link.disabled{
+    color:#999;
+    pointer-events:none;
+    cursor:default;
+    text-decoration:none;
 }
 
-.star-rating label {
-    color: #ccc;
-    margin: 0 2px;
-    transition: color 0.2s ease;
+/* table */
+.table-wrapper{
+    margin-top:10px;
+    border-radius:14px;
+    overflow:hidden;
+    box-shadow:0 4px 10px rgba(0,0,0,0.05);
+}
+table{width:100%;border-collapse:collapse;background:var(--card-bg);}
+th{background:#8E5DF5;padding:12px;text-align:left;font-weight:600;color:#fff;font-size:14px;}
+td{padding:12px;border-bottom:1px solid var(--border-color);font-size:14px;}
+tr:hover{background:var(--hover-color);}
+.text-right{text-align:right;}
+.total-row td{font-weight:600;font-size:15px;}
+
+/* ô sản phẩm */
+.product-cell{
+    display:flex;
+    align-items:center;
+    gap:10px;
+}
+.product-img{
+    width:50px;
+    height:50px;
+    border-radius:8px;
+    object-fit:cover;
+    border:1px solid var(--border-color);
 }
 
-.star-rating input:checked ~ label {
-    color: #ffca08;
+.btn-back{
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    background:#f0e8ff;
+    padding:8px 14px;
+    border-radius:999px;
+    font-size:13px;
+    text-decoration:none;
+    color:#5a3ec8;
+    margin-bottom:10px;
+}
+.btn-back i{font-size:12px;}
+.back-link{margin-top:20px;}
+.back-link a{
+    color:#8E5DF5;
+    font-weight:600;
+    font-size:16px;
+    text-decoration:none;
 }
 
-.star-rating label:hover,
-.star-rating label:hover ~ label {
-    color: #ffdd55;
+.back-link a:hover{
+    text-decoration:underline;
+    color:#E91E63;
 }
 
-.comment-area {
-    border-radius: 8px;
-    resize: none;
-    font-size: 14px;
-}
+.small-muted { font-size:12px; color:#777; }
+.badge-mini { padding:6px 10px; border-radius:999px; font-size:12px; display:inline-block; }
+.badge-km { background:#ffeedd; color:#b26b00; margin-left:6px; border-radius:8px; padding:4px 8px; }
 
-.btn-review {
-    width: 100%;
-    padding: 6px 10px;
-    font-size: 14px;
-    border-radius: 999px;
-}
-
-.review-info {
-    font-size: 13px;
-    color: #28a745;
-    margin-top: 4px;
-}
 </style>
+</head>
 
-<div class="container py-5">
-    <h2 class="mb-4">Chi tiết đơn hàng #<?= htmlspecialchars($order['id']) ?></h2>
-
-    <?php if ($successMsg): ?>
-        <div class="alert alert-success"><?= htmlspecialchars($successMsg) ?></div>
-    <?php endif; ?>
-    <?php if ($errorMsg): ?>
-        <div class="alert alert-danger"><?= htmlspecialchars($errorMsg) ?></div>
-    <?php endif; ?>
-
-    <div class="row">
-        <div class="col-md-6">
-            <p><strong>Ngày đặt:</strong>
-                <?= htmlspecialchars(date('d/m/Y H:i', strtotime($order['created_at'] ?? 'now'))) ?>
-            </p>
-            <p><strong>Trạng thái:</strong>
-                <?= htmlspecialchars(ucfirst($order['status'] ?? 'pending')) ?>
-            </p>
-            <p><strong>Phương thức thanh toán:</strong>
-                <?= htmlspecialchars($payment_label) ?>
-            </p>
-
-            <?php if ($can_cancel): ?>
-                <form method="post" class="mt-2"
-                      onsubmit="return confirm('Bạn chắc chắn muốn hủy đơn hàng này?');">
-                    <input type="hidden" name="action" value="cancel_order">
-                    <button type="submit" class="btn btn-outline-danger">
-                        Hủy đơn hàng
-                    </button>
-                </form>
-                <small class="text-muted d-block mt-1">
-                    Bạn chỉ có thể hủy khi đơn chưa được giao cho đơn vị vận chuyển.
-                </small>
-            <?php endif; ?>
-        </div>
-
-        <div class="col-md-6">
-            <p><strong>Người nhận:</strong>
-                <?= htmlspecialchars($order['recipient_name'] ?? ($order['name'] ?? '-')) ?>
-            </p>
-            <p><strong>Địa chỉ:</strong>
-                <?= htmlspecialchars($order['recipient_address'] ?? ($order['address'] ?? '-')) ?>
-            </p>
-            <p><strong>Điện thoại:</strong>
-                <?= htmlspecialchars($order['recipient_phone'] ?? ($order['phone'] ?? '-')) ?>
-            </p>
-            <p>
-                <strong>Tổng tiền:</strong>
-                <span class="text-danger fw-bold">
-                    <?= number_format($order_total, 0, '', '.') ?>₫
-                </span>
-            </p>
-        </div>
-    </div>
-
-    <hr>
-
-    <h4 class="mb-3">Sản phẩm trong đơn</h4>
-
-    <?php if (!empty($items)): ?>
-        <?php if ($can_comment): ?>
-            <p class="text-success mb-3">
-                Đơn hàng đã được giao, bạn có thể đánh giá (chọn sao) và bình luận cho từng sản phẩm bên dưới.
-            </p>
-        <?php else: ?>
-            <p class="text-muted mb-3">
-                Bạn chỉ có thể đánh giá/bình luận khi đơn hàng ở trạng thái <strong>ĐÃ GIAO HÀNG</strong>.
-            </p>
-        <?php endif; ?>
-
-        <div class="list-group">
-            <?php foreach ($items as $it): ?>
-                <?php
-                    $imgFile = $it['product_image'] ?? '';
-                    $imgPath = !empty($imgFile)
-                        ? '../uploads/' . $imgFile
-                        : '../assets/no-image.png';
-
-                    $pid       = (int)($it['product_id'] ?? 0);
-                    $myData    = $user_comments[$pid] ?? ['rating' => 0, 'comment' => ''];
-                    $myRating  = $myData['rating'] ?: 5;
-                    $myComment = $myData['comment'] ?? '';
-                ?>
-                <div class="list-group-item">
-                    <div class="d-flex align-items-center">
-                        <img src="<?= htmlspecialchars($imgPath) ?>"
-                             alt=""
-                             style="width:64px;height:64px;object-fit:cover;margin-right:12px;">
-
-                        <div>
-                            <div class="fw-semibold">
-                                <?= htmlspecialchars($it['product_name'] ?? 'Sản phẩm') ?>
-                            </div>
-                            <small class="text-muted">
-                                Số lượng:
-                                <?= (int)($it['quantity'] ?? 0) ?>
-                                • Giá:
-                                <?= number_format((float)($it['price'] ?? 0), 0, '', '.') ?>₫
-                            </small>
-                        </div>
-
-                        <div class="ms-auto fw-semibold">
-                            <?php
-                                $lineTotal = ((float)($it['price'] ?? 0)) * ((int)($it['quantity'] ?? 0));
-                                echo number_format($lineTotal, 0, '', '.') . '₫';
-                            ?>
-                        </div>
-                    </div>
-
-                    <!-- Form đánh giá + bình luận (UI đẹp) -->
-                    <div class="review-box">
-                        <?php if ($can_comment): ?>
-                            <form method="post">
-                                <input type="hidden" name="comment_product_id" value="<?= $pid ?>">
-
-                                <!-- Rating sao -->
-                                <div class="mb-2">
-                                    <div class="star-rating">
-                                        <?php for ($i = 5; $i >= 1; $i--): ?>
-                                            <input
-                                                type="radio"
-                                                id="star<?= $i ?>-<?= $pid ?>"
-                                                name="rating"
-                                                value="<?= $i ?>"
-                                                <?= ($myRating == $i ? 'checked' : '') ?>
-                                            >
-                                            <label for="star<?= $i ?>-<?= $pid ?>">★</label>
-                                        <?php endfor; ?>
-                                    </div>
-                                </div>
-
-                                <!-- Textarea bình luận -->
-                                <textarea
-                                    name="comment"
-                                    class="form-control comment-area mb-2"
-                                    rows="2"
-                                    placeholder="Viết cảm nhận của bạn về sản phẩm này..."><?= htmlspecialchars($myComment) ?></textarea>
-
-                                <!-- Nút gửi -->
-                                <button type="submit" class="btn btn-primary btn-review">
-                                    <?= $myComment ? 'Cập nhật đánh giá' : 'Gửi đánh giá' ?>
-                                </button>
-
-                                <?php if ($myComment): ?>
-                                    <div class="review-info">
-                                        Bạn đã đánh giá sản phẩm này <?= $myRating ?> ★ – có thể chỉnh sửa nếu muốn.
-                                    </div>
-                                <?php endif; ?>
-                            </form>
-                        <?php else: ?>
-                            <small class="text-muted">
-                                Đơn hàng chưa được giao, bạn chưa thể đánh giá/bình luận sản phẩm này.
-                            </small>
-                        <?php endif; ?>
-                    </div>
-                </div>
-            <?php endforeach; ?>
-        </div>
-    <?php else: ?>
-        <p>Không có sản phẩm nào trong đơn hàng này.</p>
-    <?php endif; ?>
-
-    <a href="order_history.php" class="btn btn-secondary mt-4">
-        ← Quay lại lịch sử đơn hàng
-    </a>
+<body>
+<div class="sidebar">
+    <h3>YaMy Admin</h3>
+   <a href="dashboard.php"><i class="fa fa-gauge"></i> Trang Quản Trị</a>
+    <a href="orders.php"><i class="fa fa-shopping-cart"></i> Quản lý đơn hàng</a>
+    <a href="users.php"><i class="fa fa-user"></i> Quản lý người dùng</a>
+    <a href="products.php"><i class="fa fa-box"></i> Quản lý sản phẩm</a>
+    <a href="categories.php"><i class="fa fa-list"></i> Quản lý danh mục</a>
+    <a href="sizes_colors.php"><i class="fa fa-ruler-combined"></i> Size & Màu</a>
+    <a href="vouchers.php"><i class="fa-solid fa-tags"></i> Quản lý vouchers</a>
+    <a href="news.php"><i class="fa fa-newspaper"></i> Quản lý tin tức</a>
+    <a href="reviews.php"><i class="fa fa-comment"></i> Quản lý bình luận</a>
+    <a href="logout.php" class="logout"><i class="fa fa-sign-out"></i> Đăng xuất</a>
 </div>
 
-<?php
-include_once dirname(__DIR__) . '/includes/footer.php';
-ob_end_flush();
+<div class="content">
+    <a href="orders.php" class="btn-back"><i class="fa fa-arrow-left"></i> Quay lại danh sách</a>
+    <h1 class="page-title">Chi tiết đơn hàng</h1>
+    <div class="breadcrumb">
+        <a href="orders.php">Quản lý đơn hàng</a> &raquo;
+        Đơn: <strong><?= htmlspecialchars($orderCode, ENT_QUOTES, 'UTF-8') ?></strong>
+    </div>
+
+    <!-- THÔNG TIN ĐƠN HÀNG -->
+    <div class="card">
+        <div class="card-header">
+            <h2>Thông tin đơn hàng</h2>
+            <span class="badge-status <?= htmlspecialchars($badgeClass, ENT_QUOTES, 'UTF-8') ?>">
+                <?= htmlspecialchars($statusText, ENT_QUOTES, 'UTF-8') ?>
+            </span>
+        </div>
+
+        <div class="info-grid">
+            <div>
+                <div class="info-item-title">Mã đơn hàng</div>
+                <div class="info-item-value"><?= htmlspecialchars($orderCode, ENT_QUOTES, 'UTF-8') ?></div>
+            </div>
+            <div>
+                <div class="info-item-title">Tên người nhận</div>
+                <div class="info-item-value">
+                    <?= htmlspecialchars($order['recipient_name'] ?? '--', ENT_QUOTES, 'UTF-8') ?>
+                </div>
+            </div>
+            <div>
+                <div class="info-item-title">Số điện thoại</div>
+                <div class="info-item-value">
+                    <?= htmlspecialchars($order['recipient_phone'] ?? '--', ENT_QUOTES, 'UTF-8') ?>
+                </div>
+            </div>
+            <div>
+                <div class="info-item-title">Địa chỉ nhận hàng</div>
+                <div class="info-item-value">
+                    <?= nl2br(htmlspecialchars($order['recipient_address'] ?? '--', ENT_QUOTES, 'UTF-8')) ?>
+                </div>
+            </div>
+            <div>
+                <div class="info-item-title">Phương thức thanh toán</div>
+                <div class="info-item-value">
+                    <?= htmlspecialchars($paymentText, ENT_QUOTES, 'UTF-8') ?>
+                </div>
+            </div>
+            <div>
+                <div class="info-item-title">Tổng tiền (ghi trong đơn)</div>
+                <div class="info-item-value">
+                    <?= number_format($orderTotal, 0, ',', '.') ?> đ
+                </div>
+            </div>
+            <div>
+                <div class="info-item-title">Ghi chú</div>
+                <div class="info-item-value">
+                    <?= nl2br(htmlspecialchars($order['note'] ?? 'Không có', ENT_QUOTES, 'UTF-8')) ?>
+                </div>
+            </div>
+            <div>
+                <div class="info-item-title">Ngày đặt</div>
+                <div class="info-item-value">
+                    <?= htmlspecialchars($order['created_at'] ?? '', ENT_QUOTES, 'UTF-8') ?>
+                </div>
+            </div>
+        </div>
+
+        <!--CHI TIẾT KHÁCH HÀNG-->
+        <?php if ($customer): ?>
+            <a href="user_detail.php?id=<?= urlencode($customer['id']) ?>" class="customer-link">
+                Chi tiết khách hàng — <?= htmlspecialchars($customer['fullname'] ?? $customer['username'] , ENT_QUOTES, 'UTF-8') ?>
+            </a>
+        <?php else: ?>
+            <span class="customer-link disabled">Chi tiết khách hàng</span>
+        <?php endif; ?>
+
+    </div>
+
+    <!-- DANH SÁCH SẢN PHẨM -->
+    <div class="card">
+        <div class="card-header">
+            <h2>Sản phẩm trong đơn</h2>
+        </div>
+
+        <?php if (!empty($items)): ?>
+            <div class="table-wrapper">
+                <table>
+                    <tr>
+                        <th>Stt</th>
+                        <th>Sản phẩm</th>
+                        <th>Size</th>
+                        <th>Màu</th>
+                        <th>Số lượng</th>
+                        <th>Giá gốc</th>
+                        <th>Giá KM</th>
+                        <th>Đơn giá</th>
+                        <th class="text-right">Thành tiền</th>
+                    </tr>
+                    <?php $i = 1; ?>
+                    <?php foreach ($items as $item): ?>
+                        <tr>
+                            <td><?= $i++; ?></td>
+                            <td>
+                                <div class="product-cell">
+                                    <img src="<?= htmlspecialchars($item['_img_src'], ENT_QUOTES, 'UTF-8') ?>" alt="Ảnh" class="product-img" onerror="this.onerror=null;this.src='../uploads/no-image.png'">
+                                    <div>
+                                        <div><?= htmlspecialchars($item['product_name'] ?? ('Sản phẩm #' . ($item['product_id'] ?? '')), ENT_QUOTES, 'UTF-8') ?></div>
+                                        <?php if (!empty($item['variant_id'])): ?>
+                                            <div class="small-muted">Variant ID: <?= htmlspecialchars($item['variant_id'], ENT_QUOTES, 'UTF-8') ?></div>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+                            </td>
+                            <td><?= htmlspecialchars($item['_size_name'] ?? '-', ENT_QUOTES, 'UTF-8') ?></td>
+                            <td><?= htmlspecialchars($item['_color_name'] ?? '-', ENT_QUOTES, 'UTF-8') ?></td>
+                            <td><?= (int)($item['_qty'] ?? 0); ?></td>
+                            <td>
+                                <?= (!empty($item['_variant_price']) && $item['_variant_price'] > 0) ? number_format($item['_variant_price'], 0, ',', '.') . ' đ' : '-' ?>
+                            </td>
+                            <td>
+                                <?= (!empty($item['_variant_price_reduced']) && $item['_variant_price_reduced'] > 0) ? number_format($item['_variant_price_reduced'], 0, ',', '.') . ' đ' : '-' ?>
+                            </td>
+                            <td>
+                                <?= number_format($item['_unit_price'], 0, ',', '.'); ?> đ
+                            </td>
+                            <td class="text-right"><?= number_format($item['_line_total'], 0, ',', '.'); ?> đ</td>
+                        </tr>
+                    <?php endforeach; ?>
+
+                    <tr class="total-row">
+                        <td colspan="8">Tổng tiền</td>
+                        <td class="text-right"><?= number_format($calcTotal, 0, ',', '.'); ?> đ</td>
+                    </tr>
+                </table>
+            </div>
+        <?php else: ?>
+            <p style="margin-top:10px;color:#777;">Đơn hàng không có sản phẩm nào.</p>
+        <?php endif; ?>
+    </div>
+
+    <div class="back-link">
+        <a href="orders.php">← Quay lại danh sách đơn hàng</a>
+    </div>
+</div>
+</body>
+</html>
