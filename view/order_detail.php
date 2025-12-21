@@ -65,19 +65,13 @@ $delivered_statuses = [
 $can_comment = in_array($status_norm, $delivered_statuses, true);
 
 // Các trạng thái CHO PHÉP HỦY (chưa giao cho đơn vị vận chuyển)
+// CHỈ cho hủy khi CHỜ XÁC NHẬN
 $cancelable_statuses = [
     'pending',
     'chờ xác nhận',
-    'cho xac nhan',
-    'processing',
-    'đang xử lý',
-    'dang xu ly',
-    'confirmed',
-    'đã xác nhận',
-    'da xac nhan',
-    'chuẩn bị giao',
-    'chuan bi giao'
+    'cho xac nhan'
 ];
+
 
 // Có thể hủy theo trạng thái hiện tại hay không (để hiển thị nút)
 $can_cancel = in_array($status_norm, $cancelable_statuses, true);
@@ -338,10 +332,11 @@ unset($_SESSION['success'], $_SESSION['error']);
     <div class="row">
         <div class="col-md-6">
             <p><strong>Ngày đặt:</strong>
-                <?= htmlspecialchars(date('d/m/Y H:i', strtotime($order['date_comment'] ?? 'now'))) ?>
+                <?= htmlspecialchars(date('d/m/Y H:i', strtotime($order['created_at'] ?? 'now'))) ?>
             </p>
-            <p><strong>Trạng thái:</strong>
-                <?= htmlspecialchars(ucfirst($order['status'] ?? 'pending')) ?>
+            <p>
+                <strong>Trạng thái:</strong>
+                <?= htmlspecialchars($order['status']) ?>
             </p>
             <p><strong>Phương thức thanh toán:</strong>
                 <?= htmlspecialchars($payment_label) ?>

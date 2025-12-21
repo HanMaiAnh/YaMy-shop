@@ -26,7 +26,7 @@ try {
 $hasPhone    = in_array('phone', $existingCols, true);
 $hasAddress  = in_array('address', $existingCols, true);
 $hasFullName = in_array('fullname', $existingCols, true);
-$hasGender   = in_array('gender', $existingCols, true);
+$hasGender   = in_array('sex', $existingCols, true);
 $hasBirthday = in_array('birthday', $existingCols, true); // dạng DATE hoặc VARCHAR
 
 // Lấy user (chỉ các cột tồn tại)
@@ -34,7 +34,7 @@ $selectCols = ['id', 'username', 'email'];
 if ($hasPhone)    $selectCols[] = 'phone';
 if ($hasAddress)  $selectCols[] = 'address';
 if ($hasFullName) $selectCols[] = 'fullname';
-if ($hasGender)   $selectCols[] = 'gender';
+if ($hasGender)   $selectCols[] = 'sex';
 if ($hasBirthday) $selectCols[] = 'birthday';
 $selectSql = implode(', ', $selectCols);
 
@@ -59,7 +59,7 @@ $email     = $user['email']      ?? '';
 $phone     = $user['phone']      ?? '';
 $address   = $user['address']    ?? '';
 $fullname = $user['fullname']  ?? '';
-$gender    = $user['gender']     ?? '';
+$gender    = $user['sex']     ?? '';
 $birthday  = $user['birthday']   ?? ''; // giả sử yyyy-mm-dd
 
 // Tách ngày sinh ra ngày/tháng/năm nếu có
@@ -251,9 +251,15 @@ include '../includes/header.php';
                         <div class="profile-row">
                             <div class="profile-row-label">Số điện thoại</div>
                             <div class="profile-row-control d-flex align-items-center gap-2">
-                                <input type="text" name="phone" class="form-control"
-                                       style="max-width: 260px"
-                                       value="<?= htmlspecialchars($phone) ?>">
+                                <input type="text"
+                                name="phone"
+                                class="form-control"
+                                style="max-width: 260px"
+                                value="<?= htmlspecialchars($phone) ?>"
+                                pattern="^(0|\+84)[0-9]{9}$"
+                                title="Số điện thoại phải bắt đầu bằng 0 hoặc +84 và có 10 số"
+                                inputmode="numeric">
+
                             </div>
                         </div>
                         <?php endif; ?>
@@ -321,8 +327,15 @@ include '../includes/header.php';
                         <div class="profile-row">
                             <div class="profile-row-label">Địa chỉ</div>
                             <div class="profile-row-control">
-                                <input type="text" name="address" class="form-control"
-                                       value="<?= htmlspecialchars($address) ?>">
+                                <input
+                                    type="text"
+                                    name="address"
+                                    class="form-control"
+                                    maxlength="255"
+                                    required
+                                    pattern="^(?=.*[0-9])(?=.*[\p{L}]).{5,}$"
+                                    title="Địa chỉ phải có chữ, số nhà và ít nhất 5 ký tự"
+                                    value="<?= htmlspecialchars($address) ?>">
                             </div>
                         </div>
                         <?php endif; ?>
@@ -388,6 +401,9 @@ document.addEventListener('DOMContentLoaded', function(){
             }
         });
     }
+});
+document.querySelector('input[name="phone"]')?.addEventListener('input', function () {
+    this.value = this.value.replace(/[^0-9+]/g, '');
 });
 </script>
 

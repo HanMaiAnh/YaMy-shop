@@ -1,5 +1,4 @@
 <?php
-// view/update_profile.php
 ini_set('display_errors', 1);
 error_reporting(E_ALL);
 
@@ -16,87 +15,105 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit;
 }
 
-$user_id   = (int) $_SESSION['user_id'];
+$user_id = (int) $_SESSION['user_id'];
 
 $fullname = trim($_POST['fullname'] ?? '');
-$email     = trim($_POST['email'] ?? '');
-$phone     = isset($_POST['phone'])   ? trim($_POST['phone'])   : null;
-$address   = isset($_POST['address']) ? trim($_POST['address']) : null;
-$gender    = isset($_POST['gender'])  ? trim($_POST['gender'])  : null;
+$email    = trim($_POST['email'] ?? '');
+$phone    = trim($_POST['phone'] ?? '');
+$address  = trim($_POST['address'] ?? '');
+$gender   = $_POST['gender'] ?? null;
 
-$dob_day   = isset($_POST['dob_day'])   ? (int)$_POST['dob_day']   : 0;
-$dob_month = isset($_POST['dob_month']) ? (int)$_POST['dob_month'] : 0;
-$dob_year  = isset($_POST['dob_year'])  ? (int)$_POST['dob_year']  : 0;
+$day   = (int)($_POST['dob_day'] ?? 0);
+$month = (int)($_POST['dob_month'] ?? 0);
+$year  = (int)($_POST['dob_year'] ?? 0);
 
-// Validate email
+/* ================= VALIDATE ================= */
+
+// Email
 if (empty($email) || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
-    $_SESSION['flash_error'] = 'Email không hợp lệ.';
+    $_SESSION['flash_error'] = 'Email không hợp lệ';
     header('Location: profile.php');
     exit;
 }
 
-// Ghép ngày sinh nếu đủ 3 phần
-$birthday = null;
-if ($dob_day && $dob_month && $dob_year && checkdate($dob_month, $dob_day, $dob_year)) {
-    $birthday = sprintf('%04d-%02d-%02d', $dob_year, $dob_month, $dob_day);
+// Fullname
+if ($fullname === '' || mb_strlen($fullname) < 3) {
+    $_SESSION['flash_error'] = 'Họ và tên không hợp lệ';
+    header('Location: profile.php');
+    exit;
 }
 
-try {
-    // Lấy danh sách cột hiện có
-    $cols = $pdo->query("SHOW COLUMNS FROM `users`")->fetchAll(PDO::FETCH_COLUMN, 0);
-    $existing = is_array($cols) ? $cols : [];
+// Phone
+if ($phone !== '' && !preg_match('/^(0|\+84)[0-9]{9}$/', $phone)) {
+    $_SESSION['flash_error'] = 'Số điện thoại không hợp lệ';
+    header('Location: profile.php');
+    exit;
+}
 
+// Address (chặn nhập rác)
+if (!empty($address)) {
+    if (!preg_match('/^(?=.*[0-9])(?=.*[\p{L}]).{5,}$/u', $address)) {
+        $_SESSION['flash_error'] = 'Địa chỉ phải có chữ, số nhà và tối thiểu 5 ký tự';
+        header('Location: profile.php');
+        exit;
+    }
+}
+
+// Birthday
+$birthday = null;
+if ($day && $month && $year) {
+    if (!checkdate($month, $day, $year)) {
+        $_SESSION['flash_error'] = 'Ngày sinh không hợp lệ';
+        header('Location: profile.php');
+        exit;
+    }
+
+    if ($year < 1900 || $year > date('Y')) {
+        $_SESSION['flash_error'] = 'Năm sinh không hợp lệ';
+        header('Location: profile.php');
+        exit;
+    }
+
+    $birthday = sprintf('%04d-%02d-%02d', $year, $month, $day);
+}
+
+/* ================= UPDATE ================= */
+
+try {
     $updates = [];
     $params  = [];
 
-    // luôn update email
     $updates[] = "email = ?";
     $params[]  = $email;
 
-    // fullname
-    if (in_array('fullname', $existing, true)) {
-        $updates[] = "fullname = ?";
-        $params[]  = $fullname;
-    }
+    $updates[] = "fullName = ?";
+    $params[]  = $fullname;
 
-    // phone
-    if (in_array('phone', $existing, true)) {
-        $updates[] = "phone = ?";
-        $params[]  = $phone;
-    }
+    $updates[] = "phone = ?";
+    $params[]  = $phone;
 
-    // address
-    if (in_array('address', $existing, true)) {
-        $updates[] = "address = ?";
-        $params[]  = $address;
-    }
+    $updates[] = "address = ?";
+    $params[]  = $address;
 
-    // gender
-    if (in_array('gender', $existing, true)) {
-        $updates[] = "gender = ?";
-        $params[]  = $gender;
-    }
+    $updates[] = "sex = ?";
+    $params[]  = $gender;
 
-    // birthday
-    if (in_array('birthday', $existing, true)) {
-        $updates[] = "birthday = ?";
-        $params[]  = $birthday; // có thể null nếu chưa chọn đủ
-    }
+    $updates[] = "birthday = ?";
+    $params[]  = $birthday;
 
-    // WHERE id = ?
     $params[] = $user_id;
 
     $sql = "UPDATE users SET " . implode(', ', $updates) . " WHERE id = ?";
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
 
-    $_SESSION['flash_success'] = 'Cập nhật hồ sơ thành công!';
-    header('Location: profile.php?updated=1');
+    $_SESSION['flash_success'] = 'Cập nhật hồ sơ thành công';
+    header('Location: profile.php');
     exit;
 
 } catch (Exception $e) {
-    error_log("Update profile error: " . $e->getMessage());
-    $_SESSION['flash_error'] = 'Cập nhật thất bại. Vui lòng thử lại.';
+    error_log($e->getMessage());
+    $_SESSION['flash_error'] = 'Có lỗi xảy ra, vui lòng thử lại';
     header('Location: profile.php');
     exit;
 }

@@ -248,7 +248,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && is_ajax()) {
                     $res['message'] = 'Sản phẩm không tồn tại trong giỏ';
                 }
                 break;
+/* ---------- REMOVE VOUCHER ---------- */
+case 'remove_voucher':
+    unset($_SESSION['applied_voucher']);
+    $cartTotal = 0;
+    if (!empty($_POST['selected_keys']) && is_array($_POST['selected_keys'])) {
+        foreach ($_POST['selected_keys'] as $k) {
+            if (!isset($_SESSION['cart'][$k])) continue;
+            $cartTotal += (int)$_SESSION['cart'][$k]['price']
+                        * (int)$_SESSION['cart'][$k]['quantity'];
+        }
+    }
 
+    echo json_encode([
+        'success' => true,
+        'message' => 'Đã hủy mã giảm giá',
+        'total_raw' => $cartTotal,
+        'total_formatted' => number_format($cartTotal,0,'','.').'₫'
+    ]);
+    exit;
+    
             /* ---------- REMOVE ---------- */
             case 'remove':
                 $key = $_POST['key'] ?? '';
@@ -267,7 +286,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && is_ajax()) {
                 break;
 
             /* ---------- APPLY VOUCHER (safe) ---------- */
-          // ---------- APPLY VOUCHER (FIXED) ----------
 case 'apply_voucher':
 
     $code = trim($_POST['code'] ?? '');
@@ -714,6 +732,10 @@ include dirname(__DIR__) . '/includes/header.php';
                             </span>
                             <strong id="selected-total" data-total><?= number_format($total_price) ?>₫</strong>
                         </div>
+                        <div class="d-flex justify-content-between mb-2 text-success" id="voucher-row" style="display:none">
+                            <span>Giảm giá</span>
+                            <strong id="voucher-discount">-0₫</strong>
+                        </div>
                         <div class="d-flex justify-content-between mb-2">
                             <span>Phí vận chuyển</span>
                             <!-- shipping fee shown here; default 0₫ -->
@@ -883,6 +905,11 @@ input[type=number] { -moz-appearance: textfield; }
 
 <script>
 document.addEventListener('DOMContentLoaded', () => {
+    // ===============================
+// GIỮ TỔNG TIỀN SẢN PHẨM GỐC (KHÔNG BAO GIỜ BỊ VOUCHER ẢNH HƯỞNG)
+// ===============================
+let BASE_SELECTED_TOTAL = 0;
+
     // ---------- AJAX helper ----------
     async function postAjax(data) {
         const fd = new FormData();
@@ -977,6 +1004,13 @@ document.addEventListener('DOMContentLoaded', () => {
             // option "Không dùng mã" không có data-min
             const min = parseInt(opt.dataset.min || '0', 10) || 0;
             const remaining = parseInt(opt.dataset.remaining || '0', 10);
+// ✅ LUÔN CHO PHÉP "KHÔNG DÙNG MÃ"
+if (opt.value === '') {
+    opt.disabled = false;
+    opt.dataset.disabled = '0';
+    opt.classList.remove('voucher-option-disabled');
+    return;
+}
 
             // nếu min > currentTotal => disable
             if (min > 0 && currentTotal < min) {
@@ -1015,34 +1049,57 @@ document.addEventListener('DOMContentLoaded', () => {
             sel.classList.remove('voucher-has-disabled');
         }
     }
+// ---------- SHIPPING FEE ----------
+function calculateShippingFee(total) {
+    if (total >= 500000) return 0;
+    return total > 0 ? 30000 : 0;
+}
+function updateSelectedSummary() {
+    let totalRaw   = 0;
+    let countLines = 0;
 
-    // ---------- Tính và cập nhật summary ----------
-    function updateSelectedSummary() {
-        let totalRaw   = 0;
-        let countLines = 0;
+    document.querySelectorAll('.cart-item').forEach(item => {
+        const cb = item.querySelector('.select-item');
+        if (!cb || !cb.checked) return;
 
-        document.querySelectorAll('.cart-item').forEach(item => {
-            const cb = item.querySelector('.select-item');
-            if (!cb || !cb.checked) return;
+        const qty   = parseInt(item.querySelector('.qty-input').value) || 0;
+        const price = parseInt(item.dataset.price) || 0;
 
-            const qty   = parseInt(item.querySelector('.qty-input').value) || 0;
-            const price = parseInt(item.dataset.price) || 0;
+        totalRaw   += qty * price;
+        countLines += 1;
+    });
 
-            totalRaw   += qty * price;
-            countLines += 1;
-        });
+    // ---------- SHIPPING ----------
+    const shippingFee = calculateShippingFee(totalRaw);
+    const finalTotal  = totalRaw + shippingFee;
 
-        const countSpan = document.getElementById('selected-count');
-        if (countSpan) countSpan.textContent = countLines;
+    // số lượng sản phẩm
+    const countSpan = document.getElementById('selected-count');
+    if (countSpan) countSpan.textContent = countLines;
 
-        document.querySelectorAll('[data-total]').forEach(el => {
-            el.textContent =
-                new Intl.NumberFormat('vi-VN').format(totalRaw) + '₫';
-        });
+    BASE_SELECTED_TOTAL = totalRaw; // ✅ lưu tổng gốc
+    // ✅ cập nhật TẠM TÍNH (theo checkbox)
+const selectedTotalEl = document.getElementById('selected-total');
+if (selectedTotalEl) {
+    selectedTotalEl.textContent =
+        new Intl.NumberFormat('vi-VN').format(totalRaw) + '₫';
+}
 
-        // cập nhật trạng thái voucher mỗi khi tổng thay đổi
-        refreshVoucherOptions();
+    // phí ship
+    const shipEl = document.getElementById('shipping-fee');
+    if (shipEl) {
+        shipEl.textContent =
+            shippingFee === 0 ? 'Miễn phí' :
+            new Intl.NumberFormat('vi-VN').format(shippingFee) + '₫';
     }
+
+    // tổng cộng
+    document.getElementById('selected-total-2').textContent =
+        new Intl.NumberFormat('vi-VN').format(finalTotal) + '₫';
+
+    // refresh voucher theo tổng sản phẩm (không tính ship)
+    refreshVoucherOptions();
+}
 
     function syncSelectAll() {
         const selAll = document.getElementById('select-all');
@@ -1285,13 +1342,32 @@ document.addEventListener('DOMContentLoaded', () => {
                 showToast(res.message || 'Áp dụng mã thành công', 'success');
 
                 // cập nhật tổng tiền hiển thị
-                if (typeof res.total_formatted === 'string') {
-                    document.querySelectorAll('[data-total]').forEach(el => el.textContent = res.total_formatted);
-                } else if (typeof res.total_raw === 'number') {
-                    const txt = new Intl.NumberFormat('vi-VN').format(res.total_raw) + '₫';
-                    document.querySelectorAll('[data-total]').forEach(el => el.textContent = txt);
-                }
+if (typeof res.total_raw === 'number') {
+    const selectedTotal = parseNumberFromCurrency(
+        document.getElementById('selected-total').textContent
+    );
 
+    const discount = selectedTotal - res.total_raw;
+
+    // hiển thị dòng giảm giá
+    const row = document.getElementById('voucher-row');
+    const val = document.getElementById('voucher-discount');
+
+    if (row && val && discount > 0) {
+        row.style.display = 'flex';
+        val.textContent =
+            '-' + new Intl.NumberFormat('vi-VN').format(discount) + '₫';
+    }
+
+    const shippingFee = calculateShippingFee(res.total_raw);
+    const finalTotal  = res.total_raw + shippingFee;
+    document.getElementById('shipping-fee').textContent =
+        shippingFee === 0 ? 'Miễn phí'
+        : new Intl.NumberFormat('vi-VN').format(shippingFee) + '₫';
+
+    document.getElementById('selected-total-2').textContent =
+        new Intl.NumberFormat('vi-VN').format(finalTotal) + '₫';
+}
                 // nếu server trả remaining_quantity, cập nhật option.dataset và disable khi =0
                 if (typeof res.remaining_quantity !== 'undefined' && optionEl) {
                     optionEl.dataset.remaining = String(res.remaining_quantity);
@@ -1330,11 +1406,57 @@ document.addEventListener('DOMContentLoaded', () => {
     if (voucherSelect) {
         voucherSelect.addEventListener('change', (e) => {
             const code = (e.target.value || '').trim();
-            if (!code) {
-                // nếu chọn "Không dùng mã", xoá message
-                setVoucherMessage('');
-                return;
-            }
+           if (!code) {
+    setVoucherMessage('');
+
+    // lấy các sản phẩm đang chọn
+    const selectedKeys = Array.from(document.querySelectorAll('.select-item'))
+                              .filter(cb => cb.checked)
+                              .map(cb => cb.dataset.key);
+
+    const fd = new FormData();
+    fd.append('action', 'remove_voucher');
+    selectedKeys.forEach(k => fd.append('selected_keys[]', k));
+
+    fetch('cart.php', {
+        method: 'POST',
+        body: fd,
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (!res.success) return;
+        // ✅ Ẩn dòng giảm giá voucher
+const row = document.getElementById('voucher-row');
+const val = document.getElementById('voucher-discount');
+if (row && val) {
+    row.style.display = 'none';
+    val.textContent = '-0₫';
+}
+
+
+        // cập nhật lại tổng + ship
+        const raw = res.total_raw || 0;
+        const shippingFee = calculateShippingFee(raw);
+        const finalTotal  = raw + shippingFee;
+
+        document.getElementById('selected-total').textContent =
+            new Intl.NumberFormat('vi-VN').format(raw) + '₫';
+
+        document.getElementById('shipping-fee').textContent =
+            shippingFee === 0 ? 'Miễn phí' :
+            new Intl.NumberFormat('vi-VN').format(shippingFee) + '₫';
+
+        document.getElementById('selected-total-2').textContent =
+            new Intl.NumberFormat('vi-VN').format(finalTotal) + '₫';
+
+        refreshVoucherOptions();
+        showToast('Đã hủy mã giảm giá', 'success');
+    });
+
+    return;
+}
+
             const opt = e.target.selectedOptions && e.target.selectedOptions[0];
 
             // nhỏ delay để UX mượt hơn (vừa đủ để người dùng thấy chọn)

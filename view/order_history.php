@@ -45,7 +45,9 @@ $orders = $stmt->fetchAll(PDO::FETCH_ASSOC);
                         <th>Ngày đặt</th>
                         <th>Số sản phẩm</th>
                         <th>Tổng tiền</th>
-                        <th>Trạng thái</th>
+                        <th>Trạng thái đơn</th>
+                        <th>Thanh toán</th>
+
                         <th></th>
                     </tr>
                 </thead>
@@ -66,6 +68,34 @@ $orders = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
                         $label = 'Không xác định';
                         $badgeClass = 'secondary';
+
+
+                        // ===== XỬ LÝ TRẠNG THÁI THANH TOÁN =====
+                        $payment_label = 'Chưa thanh toán';
+                        $payment_badge = 'warning';
+
+                        $payment_method = $o['payment_method'] ?? 'cod';
+
+                        // Nếu COD
+                        if ($payment_method === 'cod') {
+                            if (in_array($status_norm, ['completed', 'đã hoàn thành'], true)) {
+                                $payment_label = 'Đã thanh toán';
+                                $payment_badge = 'success';
+                            } else {
+                                $payment_label = 'Thanh toán khi nhận hàng';
+                                $payment_badge = 'secondary';
+                            }
+                        }
+                        // Nếu online
+                        else {
+                            if (in_array($status_norm, ['paid', 'completed', 'đã hoàn thành'], true)) {
+                                $payment_label = 'Đã thanh toán';
+                                $payment_badge = 'success';
+                            } else {
+                                $payment_label = 'Chưa thanh toán';
+                                $payment_badge = 'warning';
+                            }
+                        }
 
                         // Nhóm các dạng status khác nhau về chung 1 loại
 
@@ -97,15 +127,6 @@ $orders = $stmt->fetchAll(PDO::FETCH_ASSOC);
                             'đã hoàn thành'
                         ];
 
-                        // 4. Đã thanh toán
-                        $paid_values = [
-                            'paid',
-                            'đã thanh toán',
-                            'da thanh toan',
-                            'thanh toán thành công',
-                            'thanh toan thanh cong'
-                        ];
-
                         // 5. Đã hủy
                         $cancelled_values = [
                             'cancelled',
@@ -117,28 +138,31 @@ $orders = $stmt->fetchAll(PDO::FETCH_ASSOC);
                             'huy'
                         ];
 
-                        if (in_array($status_norm, $pending_values, true)) {
-                            $label = 'Chờ xử lý';
-                            $badgeClass = 'warning';
-                        } elseif (in_array($status_norm, $processing_values, true)) {
-                            $label = 'Đang xử lý';
-                            $badgeClass = 'info';
-                        } elseif (in_array($status_norm, $completed_values, true)) {
-                            $label = 'Hoàn thành';
-                            $badgeClass = 'success';
-                        } elseif (in_array($status_norm, $paid_values, true)) {
-                            $label = 'Đã thanh toán';
-                            $badgeClass = 'primary';
-                        } elseif (in_array($status_norm, $cancelled_values, true)) {
-                            $label = 'Đã hủy';
-                            $badgeClass = 'danger';
-                        } else {
-                            // Nếu không map được thì hiển thị THẲNG giá trị trong DB
-                            if ($status_raw !== '') {
-                                $label = $status_raw;
-                                $badgeClass = 'secondary';
-                            }
-                        }
+                        // ===== MAP TRẠNG THÁI ĐƠN HÀNG (CHUẨN CUỐI) =====
+if (in_array($status_norm, ['paid', 'pending', 'payment_success', 'success', 'chờ xác nhận', 'cho xac nhan'], true)) {
+    $label = 'Chờ xác nhận';
+    $badgeClass = 'warning';
+}
+elseif (in_array($status_norm, $processing_values, true)) {
+    $label = 'Đang xử lý';
+    $badgeClass = 'info';
+}
+elseif (in_array($status_norm, $completed_values, true)) {
+    $label = 'Hoàn thành';
+    $badgeClass = 'success';
+}
+elseif (in_array($status_norm, $cancelled_values, true)) {
+    $label = 'Đã hủy';
+    $badgeClass = 'danger';
+}
+else {
+    if ($status_raw !== '') {
+        $label = $status_raw;
+        $badgeClass = 'secondary';
+    }
+}
+
+
 
                         // ===== XỬ LÝ NGÀY ĐẶT =====
                         $created = $o['created_at'] ?? null;
@@ -161,6 +185,13 @@ $orders = $stmt->fetchAll(PDO::FETCH_ASSOC);
                                     <?= htmlspecialchars($label) ?>
                                 </span>
                             </td>
+
+                            <td>
+                                <span class="badge bg-<?= htmlspecialchars($payment_badge) ?>">
+                                    <?= htmlspecialchars($payment_label) ?>
+                                </span>
+                            </td>
+
                             <td>
                                 <a href="order_detail.php?id=<?= (int)$o['id'] ?>" class="btn btn-sm btn-outline-info">Xem</a>
                             </td>

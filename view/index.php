@@ -15,20 +15,47 @@ $sqlFeatured = "
         p.discount_percent,
         p.created_at,
         c.name AS cat_name,
+
         MIN(pi.image_url) AS image_url,
+
         MIN(v.price) AS price,
         MIN(NULLIF(v.price_reduced,0)) AS reduced_price,
-        COALESCE(SUM(v.quantity),0) AS total_qty
+
+        COALESCE(SUM(od.quantity), 0) AS total_sold,
+        COALESCE(SUM(v.quantity), 0) AS total_stock
+
     FROM products p
-    LEFT JOIN categories c      ON p.category_id = c.id
-    LEFT JOIN product_images pi ON pi.product_id = p.id
-    LEFT JOIN product_variants v ON v.product_id = p.id
+
+    LEFT JOIN categories c 
+           ON c.id = p.category_id
+
+    LEFT JOIN product_images pi 
+           ON pi.product_id = p.id
+
+    LEFT JOIN product_variants v 
+           ON v.product_id = p.id
+
+    LEFT JOIN order_details od 
+           ON od.product_id = p.id
+
+    LEFT JOIN orders o 
+           ON o.id = od.order_id
+          AND o.status = 'Đã hoàn thành'
+
     WHERE p.status = 1
+
     GROUP BY p.id, p.name, p.discount_percent, p.created_at, c.name
-    HAVING COALESCE(SUM(v.quantity),0) > 0
-    ORDER BY p.created_at DESC
+
+    HAVING total_stock > 0
+
+    ORDER BY 
+        p.is_featured DESC,
+        total_sold DESC,
+        p.created_at DESC
+
     LIMIT 8
 ";
+
 
 try {
     $featured = $pdo->query($sqlFeatured)->fetchAll(PDO::FETCH_ASSOC);

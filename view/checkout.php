@@ -4,25 +4,121 @@ ob_start();
 session_start();
 
 require_once dirname(__DIR__) . '/config/db.php';
-require_once dirname(__DIR__) . '/config/config_vnpay.php';
-
-// Nạp header (giao diện, nav, các hàm chung khác)
 require_once dirname(__DIR__) . '/includes/header.php';
-
-// --------------------- đảm bảo nạp includes/stock.php (nơi chứa reduceStockAfterPayment) ---------------------
-// Nếu hàm chưa tồn tại thì require file stock.php; nếu đã tồn tại (ví dụ header tự định nghĩa) thì không require.
-$stock_file = dirname(__DIR__) . '/includes/stock.php';
-if (!function_exists('reduceStockAfterPayment')) {
-    if (file_exists($stock_file)) {
-        require_once $stock_file;
-    } else {
-        error_log("includes/stock.php not found at: " . $stock_file);
-        // Không throw để tránh crash giao diện; khi gọi hàm sẽ báo lỗi rõ hơn
-    }
-}
+// BẮT BUỘC: load cấu hình VNPay để dùng khi redirect
+require_once dirname(__DIR__) . '/config/config_vnpay.php';
 
 // Bật exception mode PDO (nếu chưa)
 $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+// -----------------------
+// HANDLE VNPAY RETURN / CALLBACK (nếu vnp gửi về đây)
+// -----------------------
+if (!empty($_GET['vnp_TxnRef']) || !empty($_GET['vnp_ResponseCode']) || !empty($_GET['vnp_SecureHash'])) {
+    // Kiểm tra secure hash
+    $vnp_Params = $_GET;
+    $vnp_SecureHash = isset($vnp_Params['vnp_SecureHash']) ? $vnp_Params['vnp_SecureHash'] : '';
+    // Remove secure hash params for build hash data
+    unset($vnp_Params['vnp_SecureHash']);
+    unset($vnp_Params['vnp_SecureHashType']);
+
+    ksort($vnp_Params);
+    $hashdata = [];
+    foreach ($vnp_Params as $key => $value) {
+        if (substr($key, 0, 4) === "vnp_") {
+            $hashdata[] = $key . '=' . $value;
+        }
+    }
+    $hashdata = implode('&', $hashdata);
+
+    $calcHash = '';
+    if (!empty($vnp_HashSecret)) {
+        $calcHash = hash_hmac('sha512', $hashdata, $vnp_HashSecret);
+    }
+
+    $vnp_TxnRef = isset($_GET['vnp_TxnRef']) ? $_GET['vnp_TxnRef'] : null;
+    $vnp_ResponseCode = isset($_GET['vnp_ResponseCode']) ? $_GET['vnp_ResponseCode'] : null;
+
+    // Nếu hash hợp lệ và response code = 00 => payment success
+    if ($calcHash && hash_equals($calcHash, $vnp_SecureHash)) {
+        // thành công khi response code == '00'
+        if ($vnp_ResponseCode === '00') {
+            try {
+                $pdo->beginTransaction();
+
+                // Cập nhật đơn hàng: đánh dấu paid
+                $orderId = (int)$vnp_TxnRef;
+                if ($orderId > 0) {
+                    // Nếu bảng orders có cột status/paid_at, cập nhật
+                    $updateSql = "UPDATE orders SET status = ?, paid_at = NOW() WHERE id = ?";
+                    $stmtUpd = $pdo->prepare($updateSql);
+                    $stmtUpd->execute(['Đã giao hàng', $orderId]);
+                }
+
+                // Xóa các selected_keys đã lưu trong pending_order session (nếu có)
+                if (!empty($_SESSION['pending_order']) && is_array($_SESSION['pending_order'])) {
+                    $pending = $_SESSION['pending_order'];
+                    $selKeys = $pending['selected_keys'] ?? [];
+                    if (!empty($selKeys) && isset($_SESSION['cart']) && is_array($_SESSION['cart'])) {
+                        foreach ($selKeys as $k) {
+                            if (isset($_SESSION['cart'][$k])) {
+                                unset($_SESSION['cart'][$k]);
+                            }
+                        }
+                        if (empty($_SESSION['cart'])) {
+                            unset($_SESSION['cart']);
+                        }
+                    }
+                    // xóa voucher đã dùng
+                    if (isset($_SESSION['applied_voucher'])) {
+                        unset($_SESSION['applied_voucher']);
+                    }
+                    // cleanup pending_order
+                    unset($_SESSION['pending_order']);
+                }
+
+                $pdo->commit();
+
+                // redirect tới trang thành công
+                header('Location: order_success.php?order_id=' . urlencode($orderId));
+                exit;
+            } catch (Exception $e) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                error_log('VNPAY finalize error: ' . $e->getMessage());
+                // Nếu có lỗi, redirect về cart với message
+                $_SESSION['flash_error'] = 'Xử lý thanh toán gặp lỗi. Vui lòng liên hệ hỗ trợ.';
+                header('Location: cart.php');
+                exit;
+            }
+        } else {
+            // payment failed or cancelled
+            try {
+                $pdo->beginTransaction();
+                $orderId = (int)$vnp_TxnRef;
+                if ($orderId > 0) {
+                    $stmtFail = $pdo->prepare("UPDATE orders SET status = ?, updated_at = NOW() WHERE id = ?");
+                    $stmtFail->execute(['Hủy đơn hàng', $orderId]);
+                }
+
+                // Nếu bạn đã giảm stock khi tạo order, cần logic trả lại stock ở đây (nếu muốn).
+                $pdo->commit();
+            } catch (Exception $e) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                error_log('VNPAY failure handling error: ' . $e->getMessage());
+            }
+
+            $_SESSION['flash_error'] = 'Thanh toán không thành công hoặc đã bị hủy.';
+            header('Location: cart.php');
+            exit;
+        }
+    } else {
+        // Secure hash không hợp lệ
+        error_log('VNPAY verify failed. calcHash=' . $calcHash . ' | received=' . $vnp_SecureHash);
+        $_SESSION['flash_error'] = 'Không thể xác thực phản hồi thanh toán (invalid signature).';
+        header('Location: cart.php');
+        exit;
+    }
+}
 
 // --- Kiểm tra đăng nhập ---
 if (empty($_SESSION['user_id'])) {
@@ -46,7 +142,7 @@ try {
 
     // Cột nào tồn tại thì select cột đó
     $selectUserCols = ['id', 'email'];
-    if (in_array('fullname', $userCols, true)) $selectUserCols[] = 'fullname';
+    if (in_array('full_name', $userCols, true)) $selectUserCols[] = 'full_name';
     if (in_array('username',  $userCols, true)) $selectUserCols[] = 'username';
     if (in_array('phone',     $userCols, true)) $selectUserCols[] = 'phone';
     if (in_array('address',   $userCols, true)) $selectUserCols[] = 'address';
@@ -56,8 +152,8 @@ try {
     $stmtUser->execute([$user_id]);
     if ($u = $stmtUser->fetch(PDO::FETCH_ASSOC)) {
         $profile_email   = $u['email'] ?? '';
-        // Ưu tiên fullname, nếu không có thì dùng username
-        $profile_name    = $u['fullname'] ?? ($u['username'] ?? '');
+        // Ưu tiên full_name, nếu không có thì dùng username
+        $profile_name    = $u['full_name'] ?? ($u['username'] ?? '');
         $profile_phone   = $u['phone'] ?? '';
         $profile_address = $u['address'] ?? '';
     }
@@ -103,47 +199,57 @@ if (!empty($selected_keys)) {
 
 // nếu giỏ hàng rỗng -> thông báo
 if (empty($cart_items)) {
-    echo '<div class="container py-5 text-center">
-            <h3>Không có sản phẩm nào để thanh toán!</h3>
-            <a href="cart.php" class="btn btn-danger mt-3">Quay lại giỏ hàng</a>
-          </div>';
+    echo '<div class="container py-5 text-center">'
+       . '<h3>Không có sản phẩm nào để thanh toán!</h3>'
+       . '<a href="cart.php" class="btn btn-danger mt-3">Quay lại giỏ hàng</a>'
+       . '</div>';
     include dirname(__DIR__) . '/includes/footer.php';
     exit;
 }
 
-// ================== TÍNH TỔNG TIỀN (GIÁ CUỐI) ==================
+// ================== TÍNH TỔNG TIỀN + VOUCHER ==================
 $cart_subtotal = 0;
+// ================== CONFIG SHIPPING ==================
+define('SHIP_THRESHOLD', 500000); // 500k
+define('SHIP_FEE', 30000);        // 30k
 
 foreach ($cart_items as $k => &$it) {
-    // LUÔN dùng giá cuối
     $price = (float)($it['price'] ?? 0);
     $qty   = (int)($it['quantity'] ?? 0);
-
     $subtotal = $price * $qty;
     $it['subtotal'] = $subtotal;
     $cart_subtotal += $subtotal;
 }
 unset($it);
 
-// ================== VOUCHER ==================
+// --- XỬ LÝ remove voucher (nếu user click nút xóa) ---
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['remove_voucher'])) {
+    unset($_SESSION['applied_voucher']);
+    // redirect để tránh resubmit
+    header('Location: checkout.php');
+    exit;
+}
+
+// --- ÁP DỤNG voucher nếu có trong session (không cần checkbox) ---
 $voucher_info    = $_SESSION['applied_voucher'] ?? null;
 $discount_amount = 0;
 $voucher_code    = '';
-
 if (is_array($voucher_info)) {
-    $voucher_code = (string)($voucher_info['code'] ?? '');
     $discount_amount = (float)($voucher_info['discount_amount'] ?? 0);
-
-    // Chặn giảm quá mức
+    $voucher_code    = (string)($voucher_info['code'] ?? '');
     if ($discount_amount > $cart_subtotal) {
         $discount_amount = $cart_subtotal;
     }
 }
 
-// ================== TỔNG TIỀN CUỐI ==================
-$grand_total = max(0, $cart_subtotal - $discount_amount);
+// ================== TÍNH PHÍ SHIP ==================
+$shipping_fee = 0;
+if ($cart_subtotal > 0 && $cart_subtotal < SHIP_THRESHOLD) {
+    $shipping_fee = SHIP_FEE;
+}
 
-
+// Tổng cuối = tiền hàng - voucher + ship
+$grand_total = max(0, $cart_subtotal - $discount_amount + $shipping_fee);
 
 
 // ================== CẤU TRÚC BẢNG ORDERS ==================
@@ -155,78 +261,9 @@ try {
     error_log("Không thể lấy cấu trúc orders: " . $e->getMessage());
 }
 
-/**
- * Hàm helper: tạo URL VNPay (trả về string)
- * Tái sử dụng thay vì duplicate code
- */
-function createVnpayUrl(PDO $pdo, int $orderId, string $vnp_Url, string $vnp_Returnurl, string $vnp_TmnCode, string $vnp_HashSecret, string $vnp_BankCode = ''): string
-{
-    // Lấy thông tin đơn (dùng total từ orders)
-    $stmt = $pdo->prepare("SELECT total FROM orders WHERE id = ? LIMIT 1");
-    $stmt->execute([$orderId]);
-    $order = $stmt->fetch(PDO::FETCH_ASSOC);
-    if (!$order) {
-        throw new Exception('Không tìm thấy đơn hàng #' . $orderId);
-    }
-
-    $amount = (float)($order['total'] ?? 0);
-    if ($amount <= 0) {
-        throw new Exception('Tổng tiền đơn hàng không hợp lệ.');
-    }
-
-    $vnp_Amount = $amount * 100;
-    $vnp_TxnRef    = (string)$orderId; // Mã đơn hàng
-    $vnp_OrderInfo = "Thanh toan don hang #{$orderId}";
-    $vnp_OrderType = "billpayment";
-    $vnp_Locale    = "vn";
-    $vnp_IpAddr    = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
-
-    $inputData = [
-        "vnp_Version"   => "2.1.0",
-        "vnp_TmnCode"   => $vnp_TmnCode,
-        "vnp_Amount"    => $vnp_Amount,
-        "vnp_Command"   => "pay",
-        "vnp_CreateDate"=> date('YmdHis'),
-        "vnp_CurrCode"  => "VND",
-        "vnp_IpAddr"    => $vnp_IpAddr,
-        "vnp_Locale"    => $vnp_Locale,
-        "vnp_OrderInfo" => $vnp_OrderInfo,
-        "vnp_OrderType" => $vnp_OrderType,
-        "vnp_ReturnUrl" => $vnp_Returnurl,
-        "vnp_TxnRef"    => $vnp_TxnRef,
-    ];
-
-    if (!empty($vnp_BankCode)) {
-        $inputData['vnp_BankCode'] = $vnp_BankCode;
-    }
-
-    ksort($inputData);
-    $query    = "";
-    $hashdata = "";
-    $i = 0;
-    foreach ($inputData as $key => $value) {
-        if ($i == 1) {
-            $hashdata .= '&' . urlencode($key) . "=" . urlencode($value);
-        } else {
-            $hashdata .= urlencode($key) . "=" . urlencode($value);
-            $i = 1;
-        }
-        $query .= urlencode($key) . "=" . urlencode($value) . '&';
-    }
-
-    $vnp_UrlFull = $vnp_Url . "?" . $query;
-    if (!empty($vnp_HashSecret)) {
-        $vnpSecureHash = hash_hmac('sha512', $hashdata, $vnp_HashSecret);
-        // đảm bảo có dấu & trước param vnp_SecureHash nếu cần
-        $vnp_UrlFull .= 'vnp_SecureHash=' . $vnpSecureHash;
-    }
-
-    return $vnp_UrlFull;
-}
-
 // ================== XỬ LÝ ĐẶT HÀNG ==================
 // Chỉ xử lý đặt hàng khi POST mà KHÔNG có from_cart (tức là submit form ở checkout, không phải POST từ cart.php)
-$isSubmitOrder = ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($_POST['from_cart']));
+$isSubmitOrder = ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($_POST['from_cart']) && empty($_POST['remove_voucher']));
 
 $error_msg = '';
 if ($isSubmitOrder) {
@@ -278,6 +315,11 @@ if ($isSubmitOrder) {
                 $insertCols[] = 'subtotal';
                 $values[]     = $cart_subtotal;
             }
+            // shipping_fee nếu có
+if (in_array('shipping_fee', $orderCols, true)) {
+    $insertCols[] = 'shipping_fee';
+    $values[]     = $shipping_fee;
+}
 
             // discount_amount nếu có
             if (in_array('discount_amount', $orderCols, true)) {
@@ -312,7 +354,9 @@ if ($isSubmitOrder) {
             // status (if exists) set to pending
             if (in_array('status', $orderCols, true)) {
                 $insertCols[] = 'status';
-                $values[]     = 'pending';
+                $values[] = ($payment_method === 'vnpay')
+                    ? 'Chờ thanh toán'
+                    : 'Chờ xác nhận';
             }
 
             // created_at nếu tồn tại -> NOW()
@@ -334,50 +378,15 @@ if ($isSubmitOrder) {
                 throw new Exception('Không lấy được order_id sau khi insert orders.');
             }
 
-            // ------------------ Insert order_details ------------------
-            $stmtDet = $pdo->prepare("INSERT INTO order_details (order_id, product_id, variant_id, quantity, price) VALUES (?, ?, ?, ?, ?)");
-
-            // kiểm tra products có cột quantity hay không (fallback nếu không có variant)
-            $hasProductsQuantity = false;
-            try {
-                $colCheck = $pdo->query("SHOW COLUMNS FROM products LIKE 'quantity'")->fetch(PDO::FETCH_ASSOC);
-                if ($colCheck) $hasProductsQuantity = true;
-            } catch (Exception $e) {
-                // ignore
-            }
-
+            // Insert order_details
+            $stmtDet = $pdo->prepare("INSERT INTO order_details (order_id, product_id, quantity, price) VALUES (?, ?, ?, ?)");
             foreach ($cart_items as $k => $it) {
                 $qty       = (int)($it['quantity'] ?? 0);
                 $price     = (float)($it['price'] ?? 0);
                 $productId = (int)($it['product_id'] ?? 0);
                 if ($qty <= 0 || $productId <= 0) continue;
 
-                // try to get variant_id from cart first
-                $variantId = isset($it['variant_id']) ? (int)$it['variant_id'] : 0;
-
-                // if not present, try map from size/color
-                if ($variantId === 0) {
-                    $sizeId  = $it['size_id'] ?? ($it['size'] ?? null);
-                    $colorId = $it['color_id'] ?? ($it['color'] ?? null);
-                    if ($sizeId || $colorId) {
-                        // findVariantId might be in header or in stock.php
-                        if (function_exists('findVariantId')) {
-                            $variantId = findVariantId($pdo, $productId, $sizeId, $colorId);
-                        } else {
-                            // fallback: leave 0
-                            $variantId = 0;
-                        }
-                    }
-                }
-
-                // if still 0: allow only if products.quantity exists (we can deduct from products)
-                if ($variantId === 0 && !$hasProductsQuantity) {
-                    // không có variant và products không có cột quantity -> block để tránh order thiếu biến thể
-                    throw new Exception("Vui lòng chọn biến thể cho sản phẩm #{$productId} trước khi đặt hàng.");
-                }
-
-                // execute insert (variant_id may be 0 if allowed)
-                $stmtDet->execute([$order_id, $productId, $variantId, $qty, $price]);
+                $stmtDet->execute([$order_id, $productId, $qty, $price]);
             }
 
             // ============= CẬP NHẬT LẠI HỒ SƠ USER =============
@@ -392,10 +401,10 @@ if ($isSubmitOrder) {
                         $uParams[]  = $recipient_email;
                     }
 
-                    // fullname hoặc username
+                    // full_name hoặc username
                     if ($recipient_name !== '') {
-                        if (in_array('fullname', $userCols, true)) {
-                            $uUpdates[] = 'fullname = ?';
+                        if (in_array('full_name', $userCols, true)) {
+                            $uUpdates[] = 'full_name = ?';
                             $uParams[]  = $recipient_name;
                         } elseif (in_array('username', $userCols, true)) {
                             $uUpdates[] = 'username = ?';
@@ -429,100 +438,99 @@ if ($isSubmitOrder) {
 
             $pdo->commit();
 
-        // ===== TRỪ LƯỢT VOUCHER (COD – SAU KHI ORDER OK) =====
-if (!empty($_SESSION['applied_voucher']['id'])) {
-    $vid = (int)$_SESSION['applied_voucher']['id'];
+            // --- Thay đổi: KHÔNG xóa toàn bộ $_SESSION['cart'] ngay lập tức ---
+            // Lấy danh sách selected keys hiện tại (những item đã chèn vào order)
+            $selected_keys_for_order = array_keys($cart_items);
 
-    $stmt = $pdo->prepare("
-        UPDATE vouchers 
-        SET quantity = quantity - 1 
-        WHERE id = ? AND quantity > 0
-    ");
-    $stmt->execute([$vid]);
-}
-    
+            // Lưu pending_order vào session (dùng khi redirect sang gateway)
+            $_SESSION['pending_order'] = [
+                'order_id'      => (int)$order_id,
+                'selected_keys' => $selected_keys_for_order,
+                'total'         => $grand_total,
+                'created_at'    => time(),
+            ];
 
-            // === Sau khi commit thành công ===
-            // Không xóa toàn bộ cart ngay lập tức.
-            // Thay vào đó: chỉ remove những item đã tạo order (những key trong $cart_items)
+            // Xóa checkout_selected_keys vì đã được lưu vào pending_order
+            unset($_SESSION['checkout_selected_keys']);
 
-            // Lấy danh sách keys đã xử lý (những item đã được insert vào order_details)
-            $processed_keys = array_keys($cart_items);
-
-            // Nếu phương thức thanh toán là vnpay -> order chờ thanh toán (pending)
-            // Không xóa session cart ngay; lưu order pending để callback có thể xác nhận
-            if ($payment_method === 'vnpay') {
-                // Lưu order pending để callback biết order nào đang chờ
-                $_SESSION['pending_order_id'] = $order_id;
-                // Lưu các key liên quan (callback hoặc user cancel có thể cần)
-                $_SESSION['pending_order_keys'] = $processed_keys;
-                // Không unset cart để tránh mất giỏ hàng khi user chưa thanh toán
-            } else {
-                // ====== COD: trừ tồn kho ngay (markPaid = false) ======
-                if (!function_exists('reduceStockAfterPayment')) {
-                    // Nếu hàm không tồn tại => không thể trừ kho tự động
-                    $resReduce = ['success' => false, 'message' => 'Hàm trừ tồn kho không tồn tại trên server.'];
-                } else {
-                    try {
-                        $resReduce = reduceStockAfterPayment($pdo, (int)$order_id, false);
-                    } catch (Exception $e) {
-                        $resReduce = ['success' => false, 'message' => 'Lỗi khi gọi hàm trừ tồn kho: ' . $e->getMessage()];
+            // Nếu phương thức là COD => an toàn xóa những item đã chọn ngay
+            if ($payment_method === 'cod') {
+                foreach ($selected_keys_for_order as $k) {
+                    if (isset($_SESSION['cart'][$k])) {
+                        unset($_SESSION['cart'][$k]);
                     }
                 }
-
-                if (!empty($resReduce) && $resReduce['success']) {
-                    // Nếu trừ kho thành công -> xóa các key trong cart tương ứng
-                    foreach ($processed_keys as $k) {
-                        if (isset($_SESSION['cart'][$k])) {
-                            unset($_SESSION['cart'][$k]);
-                        }
-                    }
-                    if (empty($_SESSION['cart'])) {
-                        unset($_SESSION['cart']);
-                    }
-                    // Xóa voucher / selected_keys vì đã hoàn tất
-                    unset($_SESSION['applied_voucher']);
-                    unset($_SESSION['checkout_selected_keys']);
-
-                    // Redirect về trang chi tiết đơn hàng
-                    header("Location: order_success.php?order_id=" . urlencode($order_id));
-                    exit;
-                } else {
-                    // Trừ kho thất bại -> log và set order status để admin xử lý
-                    $errMsg = $resReduce['message'] ?? 'Không xác định';
-                    error_log("Reduce stock failed for order {$order_id}: " . $errMsg);
-
-                    // Lưu thông báo lỗi vào session để hiển thị tạm thời
-                    $_SESSION['order_processing_error_' . $order_id] = $errMsg;
-
-                    // Cập nhật trạng thái đơn để admin xử lý (ví dụ: stock_failed)
-                    try {
-                        $stmtErr = $pdo->prepare("UPDATE orders SET status = 'stock_failed' WHERE id = ?");
-                        $stmtErr->execute([$order_id]);
-                    } catch (Exception $e) {
-                        error_log("Failed to update orders.status for order {$order_id}: " . $e->getMessage());
-                    }
-
-                    // Redirect vẫn về trang chi tiết đơn để bạn kiểm tra trạng thái/thiếu hàng
-                    header("Location: order_success.php?order_id=" . urlencode($order_id));
-                    exit;
+                // nếu cart rỗng thì remove luôn key cart
+                if (empty($_SESSION['cart'])) {
+                    unset($_SESSION['cart']);
                 }
+                // voucher đã dùng => xóa (COD đã hoàn tất)
+                unset($_SESSION['applied_voucher']);
+
+                // Redirect về trang thành công COD
+                header("Location: order_success.php?order_id=" . urlencode($order_id));
+                exit;
             }
 
-            // === REDIRECT THEO PHƯƠNG THỨC THANH TOÁN ===
+            // Nếu phương thức khác (ví dụ vnpay) => giữ cart nguyên, redirect sang gateway
+            // pending_order đã lưu, sẽ xử lý xóa sau khi nhận callback/return và xác thực thanh toán.
+
+            // ================== REDIRECT THEO PHƯƠNG THỨC THANH TOÁN ==================
             if ($payment_method === 'vnpay') {
-                // Tạo URL VNPay bằng helper để đảm bảo $vnp_UrlFull luôn tồn tại
-                try {
-                    $vnp_UrlFull = createVnpayUrl($pdo, (int)$order_id, $vnp_Url, $vnp_Returnurl, $vnp_TmnCode, $vnp_HashSecret, $vnp_BankCode ?? '');
-                    header('Location: ' . $vnp_UrlFull);
-                    exit;
-                } catch (Exception $e) {
-                    // Nếu tạo URL thất bại -> log và thông báo user (không redirect)
-                    error_log("Create VNPay URL failed for order {$order_id}: " . $e->getMessage());
-                    $error_msg = "Không thể khởi tạo thanh toán VNPay: " . htmlspecialchars($e->getMessage());
+                // TẠO LINK THANH TOÁN VNPAY DÙNG CONFIG
+                $vnp_Version   = "2.1.0";
+                $vnp_TxnRef    = (string)$order_id; // Mã đơn hàng
+                $vnp_OrderInfo = "Thanh toan don hang #" . $order_id;
+                $vnp_OrderType = "billpayment";
+                $vnp_Amount    = $grand_total * 100; // Nhân 100 theo quy định VNPay
+                $vnp_Locale    = "vn";
+                $vnp_IpAddr    = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+
+                $inputData = [
+                    "vnp_Version"   => $vnp_Version,
+                    "vnp_TmnCode"   => $vnp_TmnCode,      // từ config_vnpay.php
+                    "vnp_Amount"    => $vnp_Amount,
+                    "vnp_Command"   => "pay",
+                    "vnp_CreateDate"=> date('YmdHis'),
+                    "vnp_CurrCode"  => "VND",
+                    "vnp_IpAddr"    => $vnp_IpAddr,
+                    "vnp_Locale"    => $vnp_Locale,
+                    "vnp_OrderInfo" => $vnp_OrderInfo,
+                    "vnp_OrderType" => $vnp_OrderType,
+                    "vnp_ReturnUrl" => $vnp_Returnurl,   // từ config_vnpay.php
+                    "vnp_TxnRef"    => $vnp_TxnRef,
+                ];
+
+                // Nếu bạn cấu hình cố định BankCode thì gửi kèm
+                if (!empty($vnp_BankCode)) {
+                    $inputData['vnp_BankCode'] = $vnp_BankCode;
                 }
+
+                ksort($inputData);
+
+                $query    = "";
+                $hashdata = "";
+                $i = 0;
+                foreach ($inputData as $key => $value) {
+                    if ($i == 1) {
+                        $hashdata .= '&' . urlencode($key) . "=" . urlencode($value);
+                    } else {
+                        $hashdata .= urlencode($key) . "=" . urlencode($value);
+                        $i = 1;
+                    }
+                    $query .= urlencode($key) . "=" . urlencode($value) . '&';
+                }
+
+                $vnp_UrlFull = $vnp_Url . "?" . $query;
+                if (!empty($vnp_HashSecret)) {
+                    $vnpSecureHash = hash_hmac('sha512', $hashdata, $vnp_HashSecret);
+                    $vnp_UrlFull  .= 'vnp_SecureHash=' . $vnpSecureHash;
+                }
+
+                header('Location: ' . $vnp_UrlFull);
+                exit;
             } else {
-                // NOTE: COD flow already redirected above after stock processing
+                // COD handled above already
                 header("Location: order_success.php?order_id=" . urlencode($order_id));
                 exit;
             }
@@ -544,7 +552,6 @@ $val_recipient_address = $_POST['recipient_address'] ?? $profile_address;
 // ================== HTML ==================
 ?>
 <style>
-/* ... giữ nguyên CSS như trước ... */
 body { background: #fafafa; font-family: Arial, sans-serif; }
 .checkout-container { display: flex; gap: 30px; justify-content: center; align-items: flex-start; padding: 40px; }
 .checkout-left, .checkout-right { background: #fff; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.05); padding: 30px; }
@@ -576,50 +583,93 @@ label { font-weight: bold; display: block; margin-bottom: 5px; color: #333; }
 <form method="POST">
     <div class="checkout-container">
 
-        <!-- LEFT -->
-        <div class="checkout-left">
-            <h2>Thông tin mua hàng</h2>
+<!-- LEFT -->
+<div class="checkout-left">
+    <h2>Thông tin mua hàng</h2>
 
-            <?php if (!empty($error_msg)): ?>
-                <div class="alert alert-danger"><?= $error_msg ?></div>
-            <?php endif; ?>
+    <?php if (!empty($error_msg)): ?>
+        <div class="alert alert-danger"><?= $error_msg ?></div>
+    <?php endif; ?>
 
-            <div>
-                <label for="recipient_email">Email <small>(Nhập email để nhận thông tin đơn hàng)</small></label>
-                <input type="email" name="recipient_email" id="recipient_email" class="form-control" required
-                       value="<?= htmlspecialchars($val_recipient_email) ?>">
-            </div>
+    <!-- EMAIL -->
+    <div>
+        <label for="recipient_email">
+            Email <small>(Nhập email để nhận thông tin đơn hàng)</small>
+        </label>
+        <input
+            type="email"
+            name="recipient_email"
+            id="recipient_email"
+            class="form-control"
+            required
+            title="Email không được để trống và phải đúng định dạng"
+            value="<?= htmlspecialchars($val_recipient_email) ?>"
+        >
+    </div>
 
-            <div>
-                <label for="recipient_name">Họ và tên <small>(Người nhận hàng)</small></label>
-                <input type="text" name="recipient_name" id="recipient_name" class="form-control" required
-                       value="<?= htmlspecialchars($val_recipient_name) ?>">
-            </div>
+    <!-- HỌ TÊN -->
+    <div>
+        <label for="recipient_name">
+            Họ và tên <small>(Người nhận hàng)</small>
+        </label>
+        <input
+            type="text"
+            name="recipient_name"
+            id="recipient_name"
+            class="form-control"
+            required
+            pattern="^[A-Za-zÀ-ỹ\s]{3,50}$"
+            title="Họ tên không được để trống, chỉ chứa chữ, tối thiểu 3 ký tự"
+            value="<?= htmlspecialchars($val_recipient_name) ?>"
+        >
+    </div>
 
-            <div>
-                <label for="recipient_phone">Số điện thoại <small>(Liên hệ khi giao hàng)</small></label>
-                <input type="text" name="recipient_phone" id="recipient_phone" class="form-control" required
-                       value="<?= htmlspecialchars($val_recipient_phone) ?>">
-            </div>
+    <!-- SỐ ĐIỆN THOẠI -->
+    <div>
+        <label for="recipient_phone">
+            Số điện thoại <small>(Liên hệ khi giao hàng)</small>
+        </label>
+        <input
+            type="tel"
+            name="recipient_phone"
+            id="recipient_phone"
+            class="form-control"
+            required
+            pattern="^(0[3|5|7|8|9])[0-9]{8}$"
+            title="Số điện thoại Việt Nam hợp lệ (VD: 0912345678)"
+            value="<?= htmlspecialchars($val_recipient_phone) ?>"
+        >
+    </div>
 
-            <div>
-                <label for="recipient_address">Địa chỉ nhận hàng <small>(Số nhà, đường, phường/xã, quận/huyện, tỉnh/thành)</small></label>
-                <textarea name="recipient_address" id="recipient_address" class="form-control" rows="2" required><?= htmlspecialchars($val_recipient_address) ?></textarea>
-            </div>
+    <!-- ĐỊA CHỈ -->
+    <div>
+        <label for="recipient_address">
+            Địa chỉ nhận hàng
+            <small>(Số nhà, đường, phường/xã, quận/huyện, tỉnh/thành)</small>
+        </label>
+        <textarea
+            name="recipient_address"
+            id="recipient_address"
+            class="form-control"
+            rows="2"
+            required
+            minlength="5"
+            title="Địa chỉ không được để trống và phải đủ chi tiết (ít nhất 5 ký tự)"
+        ><?= htmlspecialchars($val_recipient_address) ?></textarea>
+    </div>
 
-            <h4>Phương thức thanh toán</h4>
-            <?php
-            $pm = $_POST['payment_method'] ?? 'cod';
-            ?>
-            <label>
-                <input type="radio" name="payment_method" value="cod" <?= $pm === 'cod' ? 'checked' : '' ?>>
-                Thanh toán khi nhận hàng (COD)
-            </label><br>
-            <label>
-                <input type="radio" name="payment_method" value="vnpay" <?= $pm === 'vnpay' ? 'checked' : '' ?>>
-                Thanh toán qua VNPay
-            </label><br>
-        </div>
+    <h4>Phương thức thanh toán</h4>
+    <?php $pm = $_POST['payment_method'] ?? 'cod'; ?>
+    <label>
+        <input type="radio" name="payment_method" value="cod" <?= $pm === 'cod' ? 'checked' : '' ?>>
+        Thanh toán khi nhận hàng (COD)
+    </label><br>
+    <label>
+        <input type="radio" name="payment_method" value="vnpay" <?= $pm === 'vnpay' ? 'checked' : '' ?>>
+        Thanh toán qua VNPay
+    </label><br>
+</div>
+
 
         <!-- RIGHT -->
         <div class="checkout-right">
@@ -661,6 +711,18 @@ label { font-weight: bold; display: block; margin-bottom: 5px; color: #333; }
                     <span class="value"><?= number_format($cart_subtotal,0,'','.') ?>₫</span>
                 </div>
 
+                <?php if (!empty($_SESSION['applied_voucher'])): ?>
+                    <div style="margin:10px 0;">
+                        <div style="font-weight:600;">
+                            Mã giảm giá: <?= htmlspecialchars($_SESSION['applied_voucher']['code'] ?? '') ?>
+                            ( -<?= number_format((float)($_SESSION['applied_voucher']['discount_amount'] ?? 0),0,'','.') ?>₫ )
+                        </div>
+                        <div style="margin-top:6px;">
+                            <button type="submit" name="remove_voucher" value="1" style="background:none;border:0;color:#d32f4f;cursor:pointer;padding:0;font-size:0.95rem;">Xóa mã giảm giá</button>
+                        </div>
+                    </div>
+                <?php endif; ?>
+
                 <?php if ($discount_amount > 0): ?>
                     <div class="summary-row">
                         <span class="label">
@@ -671,9 +733,15 @@ label { font-weight: bold; display: block; margin-bottom: 5px; color: #333; }
                 <?php endif; ?>
 
                 <div class="summary-row">
-                    <span class="label">Phí vận chuyển</span>
-                    <span class="value">0₫</span>
-                </div>
+    <span class="label">Phí vận chuyển</span>
+    <span class="value">
+        <?= $shipping_fee > 0
+            ? number_format($shipping_fee,0,'','.') . '₫'
+            : 'Miễn phí'
+        ?>
+    </span>
+</div>
+
 
                 <hr>
                 <div class="summary-total">Tổng cộng: <?= number_format($grand_total,0,'','.') ?>₫</div>
@@ -687,5 +755,11 @@ label { font-weight: bold; display: block; margin-bottom: 5px; color: #333; }
         </div>
     </div>
 </form>
+
+<script>
+document.getElementById('recipient_phone')?.addEventListener('input', function () {
+    this.value = this.value.replace(/[^0-9]/g, '');
+});
+</script>
 
 <?php include dirname(__DIR__) . '/includes/footer.php'; ?>

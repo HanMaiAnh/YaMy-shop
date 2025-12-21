@@ -213,7 +213,12 @@ if (empty($images)) $images[] = 'placeholder-product.png';
 // =============================
 // Đánh giá
 // =============================
-$avg_stmt = $pdo->prepare("SELECT AVG(rating) as avg FROM comments WHERE product_id = ?");
+$avg_stmt = $pdo->prepare("
+    SELECT AVG(rating)
+    FROM comments
+    WHERE product_id = ?
+      AND is_hidden = 0
+");
 $avg_stmt->execute([$id]);
 $avg_rating = round((float)$avg_stmt->fetchColumn(), 1);
 
@@ -222,9 +227,11 @@ $comments_stmt = $pdo->prepare("
     FROM comments c
     LEFT JOIN users u ON c.user_id = u.id
     WHERE c.product_id = ?
+      AND c.is_hidden = 0
     ORDER BY c.date_comment DESC
     LIMIT 10
 ");
+
 $comments_stmt->execute([$id]);
 $comments = $comments_stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -525,7 +532,7 @@ const SIZE_VARIANTS = <?= json_encode($sizeMapForJs, JSON_UNESCAPED_UNICODE) ?>;
                                         <i class="fas fa-star <?= $i <= (int)($r['rating'] ?? 0) ? '' : 'text-muted' ?>"></i>
                                     <?php endfor; ?>
                                 </div>
-                                <p class="mb-0"><?= nl2br(htmlspecialchars($r['content'] ?? '')) ?></p>
+                                <p class="mb-0"><?= nl2br(htmlspecialchars($r['comment'] ?? '')) ?></p>
                             </div>
                         <?php endforeach; endif; ?>
                     </div>
