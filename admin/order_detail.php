@@ -528,6 +528,7 @@ tr:hover{background:var(--hover-color);}
                         <th>Số lượng</th>
                         <th>Giá gốc</th>
                         <th>Giá KM</th>
+                        <th>Đơn giá</th>
                         <th class="text-right">Thành tiền</th>
                     </tr>
                     <?php $i = 1; ?>
@@ -554,16 +555,16 @@ tr:hover{background:var(--hover-color);}
                             <td>
                                 <?= (!empty($item['_variant_price_reduced']) && $item['_variant_price_reduced'] > 0) ? number_format($item['_variant_price_reduced'], 0, ',', '.') . ' đ' : '-' ?>
                             </td>
-                            <td class="text-right">
-                                <?= number_format($item['_line_total'], 0, ',', '.') ?> đ
+                            <td>
+                                <?= number_format($item['_unit_price'], 0, ',', '.'); ?> đ
                             </td>
-
+                            <td class="text-right"><?= number_format($item['_line_total'], 0, ',', '.'); ?> đ</td>
                         </tr>
                     <?php endforeach; ?>
 
                     <tr class="total-row">
-                        <td colspan="7">Tổng tiền</td>
-                        <td class="text-right"><?= number_format($order['total'],0,',','.') ?> đ</td>
+                        <td colspan="8">Tổng tiền</td>
+                        <td class="text-right"><?= number_format($calcTotal, 0, ',', '.'); ?> đ</td>
                     </tr>
                 </table>
             </div>

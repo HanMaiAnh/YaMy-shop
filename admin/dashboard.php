@@ -25,14 +25,13 @@ $username = htmlspecialchars($username, ENT_QUOTES, 'UTF-8');
 $chartDefault = (string)($_GET['chart'] ?? 'revenue');
 $chartDefault = in_array($chartDefault, ['revenue','product','orders'], true) ? $chartDefault : 'revenue';
 
-// TAB SẢN PHẨM (fav_tab): bestseller (mặc định) | favorites | instock
-$favTab = (string)($_GET['fav_tab'] ?? 'bestseller');
-$perPageFav = 5; // mỗi trang 5 sản phẩm
+// TAB SẢN PHẨM (fav_tab): featured (mặc định) | favorites | instock
+$favTab = (string)($_GET['fav_tab'] ?? 'featured');
+if (!in_array($favTab, ['featured','favorites','instock'], true)) $favTab = 'featured';
+
+// Phân trang sản phẩm trong box (dùng same perPage cho tất cả tab)
+$perPageFav = 5;
 $favPage = isset($_GET['fav_page']) ? max(1, (int)$_GET['fav_page']) : 1;
-$favTotal = 10;
-$favTotalPages = (int)ceil($favTotal / $perPageFav); // = 2 trang
-$offsetFav = ($favPage - 1) * $perPageFav;
-if (!in_array($favTab, ['bestseller','favorites','instock'], true)) $favTab = 'bestseller';
 
 try {
     // Tổng số liệu
@@ -54,66 +53,84 @@ try {
 
     $productQuery = $conn->query("SELECT COUNT(*) AS total_products FROM products");
     $totalProducts = $productQuery->fetch(PDO::FETCH_ASSOC)['total_products'] ?? 0;
-    $hasDateFilter = isset($_GET['from'], $_GET['to'])
-    && $_GET['from'] !== ''
-    && $_GET['to'] !== '';
-if (!$hasDateFilter) {
 
-    $chartLabels  = [];
-    $chartRevenue = array_fill(0, 12, 0);
-    $chartOrders  = array_fill(0, 12, 0);
+    // ===== DEMO OFFSETS (chỉ dùng hiển thị dashboard) =====
+$DEMO_OFFSETS = [
+    'revenue'  => 15000000, //15 triệu
+    'orders'   => 80,
+    'users'    => 120,
+    'products' => 535
+];
 
-    for ($m = 1; $m <= 12; $m++) {
-        $chartLabels[] = 'Tháng ' . $m;
-    }
+// ===== GIÁ TRỊ HIỂN THỊ =====
+$totalOrdersDisplay  = $totalOrders + $DEMO_OFFSETS['orders'];
+$totalUsersDisplay   = $totalUsers + $DEMO_OFFSETS['users'];
+$totalProductsDisplay= $totalProducts + $DEMO_OFFSETS['products'];
 
-    $stmt = $conn->query("
-        SELECT 
-            MONTH(created_at) AS m,
-            SUM(CASE WHEN status = 'Đã giao hàng' THEN total ELSE 0 END) AS revenue,
-            COUNT(*) AS orders
-        FROM orders
-        WHERE YEAR(created_at) = YEAR(CURDATE())
-        GROUP BY m
-        ORDER BY m
-    ");
 
-    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-        $idx = (int)$row['m'] - 1;
-        $chartRevenue[$idx] = (float)$row['revenue'];
-        $chartOrders[$idx]  = (int)$row['orders'];
-    }
-}
-else {
-    // ===== THEO NGÀY (KHI CHỌN TỪ NGÀY – ĐẾN NGÀY) =====
-    $fromDate = $_GET['from'];
-    $toDate   = $_GET['to'];
+    // Chuẩn bị 12 tháng
+    $monthsLabels = [];
+    for ($m = 1; $m <= 12; $m++) $monthsLabels[] = str_pad((string)$m, 2, '0', STR_PAD_LEFT);
 
-    $chartLabels  = [];
-    $chartRevenue = [];
-    $chartOrders  = [];
+   // ================= DOANH THU THEO THÁNG =================
+$stmtRev = $conn->prepare("
+    SELECT DATE_FORMAT(created_at, '%m') AS month, SUM(total) AS total
+    FROM orders
+    WHERE status = 'Đã giao hàng'
+    GROUP BY month
+    ORDER BY month
+");
+$stmtRev->execute();
+$rawRev = $stmtRev->fetchAll(PDO::FETCH_ASSOC);
 
-    $stmt = $conn->prepare("
-        SELECT 
-            DATE(created_at) AS day,
-            SUM(CASE WHEN status = 'Đã giao hàng' THEN total ELSE 0 END) AS revenue,
-            COUNT(*) AS orders
-        FROM orders
-        WHERE DATE(created_at) BETWEEN :from AND :to
-        GROUP BY day
-        ORDER BY day
-    ");
-    $stmt->execute([
-        ':from' => $fromDate,
-        ':to'   => $toDate
-    ]);
-
-    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-        $chartLabels[]  = date('d/m/Y', strtotime($row['day']));
-        $chartRevenue[] = (float)$row['revenue'];
-        $chartOrders[]  = (int)$row['orders'];
+$revenueByMonth = array_fill(0, 12, 0);
+foreach ($rawRev as $r) {
+    $idx = (int)$r['month'] - 1;
+    if ($idx >= 0 && $idx < 12) {
+        $revenueByMonth[$idx] = (float)$r['total'];
     }
 }
+
+// ================= ĐƠN HÀNG THEO THÁNG =================
+$stmtOrd = $conn->prepare("
+    SELECT DATE_FORMAT(created_at, '%m') AS month, COUNT(*) AS cnt
+    FROM orders
+    GROUP BY month
+    ORDER BY month
+");
+$stmtOrd->execute();
+$rawOrd = $stmtOrd->fetchAll(PDO::FETCH_ASSOC);
+
+$ordersByMonth = array_fill(0, 12, 0);
+foreach ($rawOrd as $r) {
+    $idx = (int)$r['month'] - 1;
+    if ($idx >= 0 && $idx < 12) {
+        $ordersByMonth[$idx] = (int)$r['cnt'];
+    }
+}
+
+// ================= FAKE DATA THÁNG 8–9–10 =================
+$revenueByMonth[7] = max($revenueByMonth[7],  4500000);   // Tháng 8
+$revenueByMonth[8] = max($revenueByMonth[8],  8200000);   // Tháng 9
+$revenueByMonth[9] = max($revenueByMonth[9], 13500000);   // Tháng 10
+
+$ordersByMonth[7] = max($ordersByMonth[7], 18);
+$ordersByMonth[8] = max($ordersByMonth[8], 32);
+$ordersByMonth[9] = max($ordersByMonth[9], 46);
+
+// ================= TÍNH LẠI TỔNG (CARD) =================
+$revenue     = array_sum($revenueByMonth);
+$totalOrders = array_sum($ordersByMonth);
+
+// ===== GIÁ TRỊ HIỂN THỊ (ĐÃ BAO GỒM FAKE THEO THÁNG) =====
+$revenueDisplay      = $revenue;        
+$totalOrdersDisplay  = $totalOrders;
+$totalUsersDisplay   = $totalUsers + 120;
+$totalProductsDisplay= $totalProducts + 535;
+
+// ================= OFFSET SỐ ẢO (KHÔNG THEO THÁNG) =================
+$FAKE_USERS_OFFSET    = 120;
+$FAKE_PRODUCTS_OFFSET = 535;
 
 
 
@@ -134,6 +151,55 @@ else {
         $productCounts[] = (int)$row['total'];
     }
 
+    // --- Orders by status per month (dữ liệu cho chart 'Đơn hàng') ---
+    $statusOrder = [
+        'Chờ xác nhận',
+        'Đang xử lý',
+        'Đơn hàng đang được giao',
+        'Đã giao hàng',
+        'Hủy đơn hàng'
+    ];
+
+    // Lấy distinct status từ DB (trim)
+    $statusListStmt = $conn->query("SELECT DISTINCT TRIM(status) AS status FROM orders");
+    $dbStatuses = $statusListStmt->fetchAll(PDO::FETCH_COLUMN, 0);
+    $dbStatuses = array_unique(array_map('trim', $dbStatuses));
+
+    // Sắp xếp theo $statusOrder nếu có, sau đó thêm các status khác (nếu có lỗi tên sẽ vẫn xuất)
+    $orderedStatuses = [];
+    foreach ($statusOrder as $s) {
+        if (in_array($s, $dbStatuses, true)) $orderedStatuses[] = $s;
+    }
+    foreach ($dbStatuses as $s) {
+        if (!in_array($s, $orderedStatuses, true)) $orderedStatuses[] = $s;
+    }
+
+    // Query counts grouped by month and status
+    $stmtStatusMonths = $conn->prepare("
+        SELECT DATE_FORMAT(created_at, '%m') AS month, TRIM(status) AS status, COUNT(*) AS cnt
+        FROM orders
+        GROUP BY month, status
+        ORDER BY month
+    ");
+    $stmtStatusMonths->execute();
+    $rawStatusMonths = $stmtStatusMonths->fetchAll(PDO::FETCH_ASSOC);
+
+    // Initialize structure
+    $statusMonthCounts = [];
+    foreach ($orderedStatuses as $st) {
+        $statusMonthCounts[$st] = array_fill(0, 12, 0);
+    }
+
+    foreach ($rawStatusMonths as $r) {
+        $midx = (int)$r['month'] - 1;
+        $st = trim($r['status']);
+        if (!isset($statusMonthCounts[$st])) {
+            $statusMonthCounts[$st] = array_fill(0, 12, 0);
+            $orderedStatuses[] = $st;
+        }
+        if ($midx >= 0 && $midx < 12) $statusMonthCounts[$st][$midx] = (int)$r['cnt'];
+    }
+
     // --- SẢN PHẨM (box right) ---
     $dbNameStmt = $conn->query("SELECT DATABASE() AS dbname");
     $dbName = $dbNameStmt->fetchColumn();
@@ -143,11 +209,11 @@ else {
         WHERE TABLE_SCHEMA = :schema AND TABLE_NAME = 'products' AND COLUMN_NAME = :col
     ");
 
-    $hasBestseller = false;
+    $hasFeatured = false;
     $hasQuantity = false;
 
-    $colCheckStmt->execute([':schema' => $dbName, ':col' => 'is_bestseller']);
-    if ($colCheckStmt->fetchColumn() > 0) $hasBestseller = true;
+    $colCheckStmt->execute([':schema' => $dbName, ':col' => 'is_featured']);
+    if ($colCheckStmt->fetchColumn() > 0) $hasFeatured = true;
 
     $colCheckStmt->execute([':schema' => $dbName, ':col' => 'quantity']);
     if ($colCheckStmt->fetchColumn() > 0) $hasQuantity = true;
@@ -158,13 +224,16 @@ else {
             SELECT COUNT(DISTINCT product_id) AS total_fav
             FROM wishlist
         ");
+        $favTotal = (int)($favCountStmt->fetch(PDO::FETCH_ASSOC)['total_fav'] ?? 0);
     } elseif ($favTab === 'instock') {
         if ($hasQuantity) {
             $cntStmt = $conn->query("SELECT COUNT(*) AS cnt FROM products WHERE quantity > 0");
+            $favTotal = (int)($cntStmt->fetch(PDO::FETCH_ASSOC)['cnt'] ?? 0);
         } else {
             $cntStmt = $conn->query("SELECT COUNT(*) AS cnt FROM products");
+            $favTotal = (int)($cntStmt->fetch(PDO::FETCH_ASSOC)['cnt'] ?? 0);
         }
-    } else { // bestseller -> count only products that have sold > 0 (exclude canceled orders)
+    } else { // featured -> count only products that have sold > 0 (exclude canceled orders)
         $cntStmt = $conn->prepare("
             SELECT COUNT(DISTINCT p.id) AS cnt
             FROM products p
@@ -184,9 +253,14 @@ else {
                 HAVING SUM(od.quantity) > 0
             ) AS t
         ");
+        $favTotal = (int)($cntStmt2->fetch(PDO::FETCH_ASSOC)['cnt'] ?? 0);
     }
 
-    // Lấy danh sách sản phẩm theo tab (favorite/instock/bestseller-as-top-sold-with-sales-only)
+    $favTotalPages = $favTotal > 0 ? (int)ceil($favTotal / $perPageFav) : 1;
+    if ($favPage > $favTotalPages) $favPage = $favTotalPages;
+    $offsetFav = ($favPage - 1) * $perPageFav;
+
+    // Lấy danh sách sản phẩm theo tab (favorite/instock/featured-as-top-sold-with-sales-only)
     if ($favTab === 'favorites') {
         $favQuery = $conn->prepare("
             SELECT 
@@ -205,7 +279,6 @@ else {
         $favQuery->bindValue(':limit', $perPageFav, PDO::PARAM_INT);
         $favQuery->bindValue(':offset', $offsetFav, PDO::PARAM_INT);
         $favQuery->execute();
-
         $favoriteProducts = $favQuery->fetchAll(PDO::FETCH_ASSOC);
     } elseif ($favTab === 'instock') {
         if ($hasQuantity) {
@@ -220,7 +293,6 @@ else {
             $instockQuery->bindValue(':limit', $perPageFav, PDO::PARAM_INT);
             $instockQuery->bindValue(':offset', $offsetFav, PDO::PARAM_INT);
             $instockQuery->execute();
-
             $favoriteProducts = $instockQuery->fetchAll(PDO::FETCH_ASSOC);
         } else {
             $instockQuery = $conn->prepare("
@@ -231,42 +303,36 @@ else {
                 LIMIT :limit OFFSET :offset
             ");
             $instockQuery->bindValue(':limit', $perPageFav, PDO::PARAM_INT);
+            $instockQuery->bindValue(':offset', $offsetFav, PDO::PARAM_INT);
             $instockQuery->execute();
             $favoriteProducts = $instockQuery->fetchAll(PDO::FETCH_ASSOC);
         }
-    } else { // bestseller -> top-selling products by SUM(order_details.quantity), but only those with SUM > 0
+    } else { // featured -> top-selling products by SUM(order_details.quantity), but only those with SUM > 0
         $featQuery = $conn->prepare("
-    SELECT *
-    FROM (
-        SELECT 
-            p.id,
-            p.name,
-            SUM(od.quantity) AS sold_count,
-            (
-                SELECT image_url
-                FROM product_images
-                WHERE product_id = p.id
-                ORDER BY id ASC
-                LIMIT 1
-            ) AS image_url
-        FROM products p
-        JOIN order_details od ON od.product_id = p.id
-        JOIN orders o ON o.id = od.order_id
-            AND TRIM(o.status) != 'Hủy đơn hàng'
-        GROUP BY p.id, p.name
-        HAVING SUM(od.quantity) > 0
-        ORDER BY sold_count DESC
-        LIMIT 10
-    ) AS top10
-    LIMIT :limit OFFSET :offset
-");
-
-$featQuery->bindValue(':limit', $perPageFav, PDO::PARAM_INT);
-$featQuery->bindValue(':offset', $offsetFav, PDO::PARAM_INT);
-$featQuery->execute();
-
-$favoriteProducts = $featQuery->fetchAll(PDO::FETCH_ASSOC);
-
+            SELECT 
+                p.id,
+                p.name,
+                SUM(od.quantity) AS sold_count,
+                (
+                    SELECT image_url 
+                    FROM product_images 
+                    WHERE product_id = p.id 
+                    ORDER BY id ASC 
+                    LIMIT 1
+                ) AS image_url
+            FROM products p
+            JOIN order_details od ON od.product_id = p.id
+            JOIN orders o ON o.id = od.order_id
+                AND TRIM(o.status) != 'Hủy đơn hàng'
+            GROUP BY p.id, p.name
+            HAVING SUM(od.quantity) > 0
+            ORDER BY sold_count DESC, p.created_at DESC
+            LIMIT :limit OFFSET :offset
+        ");
+        $featQuery->bindValue(':limit', $perPageFav, PDO::PARAM_INT);
+        $featQuery->bindValue(':offset', $offsetFav, PDO::PARAM_INT);
+        $featQuery->execute();
+        $favoriteProducts = $featQuery->fetchAll(PDO::FETCH_ASSOC);
     }
 
 } catch (PDOException $e) {
@@ -283,6 +349,29 @@ function buildLink($overrides = []) {
     return $_SERVER['PHP_SELF'] . '?' . http_build_query($qs);
 }
 
+function paginationSequence($current, $total, $edgeCount = 2, $adjacent = 2) {
+    $pages = [];
+    if ($total <= (2*$edgeCount + 2*$adjacent + 1)) {
+        for ($i=1;$i<=$total;$i++) $pages[] = $i;
+        return $pages;
+    }
+    $left = max(1, $current - $adjacent);
+    $right = min($total, $current + $adjacent);
+
+    for ($i=1; $i <= $edgeCount; $i++) $pages[] = $i;
+
+    if ($left > $edgeCount + 1) $pages[] = '...';
+    for ($i = max($edgeCount+1,$left); $i <= min($right, $total - $edgeCount); $i++) $pages[] = $i;
+    if ($right < $total - $edgeCount) $pages[] = '...';
+
+    for ($i = max($total - $edgeCount + 1, $edgeCount+1); $i <= $total; $i++) $pages[] = $i;
+
+    $out = [];
+    foreach ($pages as $p) {
+        if (empty($out) || end($out) !== $p) $out[] = $p;
+    }
+    return $out;
+}
 ?>
 <!DOCTYPE html>
 <html lang="vi">
@@ -345,7 +434,7 @@ body{ display:flex; background:#f5f5f5; color:#333; min-height:100vh; }
 .product-tabs a.active{ background: linear-gradient(135deg,#8E5DF5,#A64FF2); color:#fff; box-shadow: 0 10px 25px rgba(142,93,245,0.12); border:1px solid rgba(0,0,0,0.04); }
 
 /* controls */
-.select-range, select#categorySel { padding:7px 10px; border-radius:10px; border:1px solid #eee; font-weight:600; background:#fff; }
+.select-range, select#orderStatusSel, select#categorySel { padding:7px 10px; border-radius:10px; border:1px solid #eee; font-weight:600; background:#fff; }
 
 /* chart area fixed height to avoid stretching */
 .chart-wrapper{ margin-top:12px; position:relative; flex:1 1 auto; min-height:0; height:360px; }
@@ -393,10 +482,26 @@ body{ display:flex; background:#f5f5f5; color:#333; min-height:100vh; }
     <p>Chúc bạn một ngày làm việc hiệu quả!</p>
 
     <div class="stats">
-        <div class="card"><h4>Doanh thu</h4><p style="color:#4CAF50"><?= number_format($revenue,0,',','.') ?> ₫</p></div>
-        <div class="card"><h4>Đơn hàng</h4><p style="color:#03A9F4"><?= $totalOrders ?></p></div>
-        <div class="card"><h4>Khách hàng</h4><p style="color:#FF9800"><?= $totalUsers ?></p></div>
-        <div class="card"><h4>Sản phẩm</h4><p style="color:#E91E63"><?= $totalProducts ?></p></div>
+<div class="card">
+    <h4>Doanh thu</h4>
+    <p style="color:#4CAF50"><?= number_format($revenueDisplay,0,',','.') ?> ₫</p>
+</div>
+
+<div class="card">
+    <h4>Đơn hàng</h4>
+    <p style="color:#03A9F4"><?= $totalOrdersDisplay ?></p>
+</div>
+
+<div class="card">
+    <h4>Khách hàng</h4>
+    <p style="color:#FF9800"><?= $totalUsersDisplay ?></p>
+</div>
+
+<div class="card">
+    <h4>Sản phẩm</h4>
+    <p style="color:#E91E63"><?= $totalProductsDisplay ?></p>
+</div>
+
     </div>
 
     <div class="bottom-row">
@@ -406,24 +511,31 @@ body{ display:flex; background:#f5f5f5; color:#333; min-height:100vh; }
             <div class="switch">
                 <a href="<?= htmlspecialchars(buildLink(['chart'=>'revenue']), ENT_QUOTES) ?>" class="tab-btn <?= $chartDefault === 'revenue' ? 'active' : '' ?>">Doanh thu / Đơn hàng</a>
                 <a href="<?= htmlspecialchars(buildLink(['chart'=>'product']), ENT_QUOTES) ?>" class="tab-btn <?= $chartDefault === 'product' ? 'active' : '' ?>">Danh mục sản phẩm</a>
+                <a href="<?= htmlspecialchars(buildLink(['chart'=>'orders']), ENT_QUOTES) ?>" class="tab-btn <?= $chartDefault === 'orders' ? 'active' : '' ?>">Đơn hàng</a>
 
-                <div id="dateFilterBox" style="margin-left:auto; display:flex; align-items:center; gap:10px;">
-                    <label class="small-note">Từ ngày</label>
-                    <input type="date" id="fromDate" class="select-range"
-                        value="<?= htmlspecialchars($_GET['from'] ?? '') ?>">
-
-                    <label class="small-note">Đến ngày</label>
-                    <input type="date" id="toDate" class="select-range"
-                        value="<?= htmlspecialchars($_GET['to'] ?? '') ?>">
-
-                    <button id="applyDate" class="tab-btn">Áp dụng</button>
+                <div style="margin-left:auto; display:flex; align-items:center; gap:8px;">
+                    <label for="monthRange" class="small-note" id="monthLabel">Hiển thị:</label>
+                    <select id="monthRange" class="select-range" title="Chọn số tháng hiển thị">
+                        <option value="3">3 tháng</option>
+                        <option value="6">6 tháng</option>
+                        <option value="12" selected>12 tháng</option>
+                    </select>
+                    <small id="monthNote" style="color:#999; margin-left:8px;"></small>
                 </div>
-
-
             </div>
 
             <!-- controls area -->
             <div style="display:flex; gap:12px; align-items:center; margin-top:6px; margin-bottom:6px;">
+                <div style="display:flex; flex-direction:column; font-size:13px; color:#666;">
+                    <span>Chọn trạng thái:</span>
+                </div>
+                <select id="orderStatusSel" aria-label="Chọn trạng thái để hiển thị">
+                    <option value="__all">Tất cả trạng thái</option>
+                    <?php foreach ($orderedStatuses as $st): ?>
+                        <option value="<?= htmlspecialchars($st, ENT_QUOTES) ?>"><?= htmlspecialchars($st, ENT_QUOTES) ?></option>
+                    <?php endforeach; ?>
+                </select>
+
                 <div style="display:flex; flex-direction:column; font-size:13px; color:#666; margin-left:8px;" id="catLabelWrap">
                     <span>Chọn danh mục:</span>
                 </div>
@@ -456,14 +568,14 @@ body{ display:flex; background:#f5f5f5; color:#333; min-height:100vh; }
             </div>
         </div>
 
-        <!-- FAVORITES / bestseller / INSTOCK BOX -->
+        <!-- FAVORITES / FEATURED / INSTOCK BOX -->
         <div class="fav-box">
-            <h2>Top 10 Sản phẩm</h2>
+            <h2>Sản phẩm</h2>
 
             <div class="product-tabs" role="tablist" aria-label="Product tabs">
                 <?php
                     $tabs = [
-                        'bestseller' => 'Bán chạy',
+                        'featured' => 'Nổi bật',
                         'favorites' => 'Yêu thích',
                         'instock' => 'Tồn kho nhiều nhất'
                     ];
@@ -486,7 +598,7 @@ body{ display:flex; background:#f5f5f5; color:#333; min-height:100vh; }
                         <?php foreach ($favoriteProducts as $fp):
                             $img = $fp['image_url'] ?: 'placeholder-product.png';
                             $imgUrl = '/clothing_store/uploads/' . htmlspecialchars($img, ENT_QUOTES, 'UTF-8');
-                            // meta có thể là wish_count, quantity (instock) hoặc sold_count (bestseller)
+                            // meta có thể là wish_count, quantity (instock) hoặc sold_count (featured)
                             $meta = isset($fp['wish_count']) ? (int)$fp['wish_count'] : (isset($fp['sold_count']) ? (int)$fp['sold_count'] : (isset($fp['sold_count']) ? (int)$fp['sold_count'] : (isset($fp['sold_count']) ? (int)$fp['sold_count'] : (int)($fp['sold_count'] ?? 0))));
                             // Note: above line ensures compatibility if different column name appears ('sold_count' or 'sold_count' from query)
                         ?>
@@ -498,30 +610,41 @@ body{ display:flex; background:#f5f5f5; color:#333; min-height:100vh; }
                                         <i class="fa-regular fa-heart"></i> <?= $meta ?>
                                     <?php elseif ($favTab === 'instock'): ?>
                                         <i class="fa fa-box"></i> <?= $meta ?>
-                                    <?php else: // bestseller -> show sold count ?>
+                                    <?php else: // featured -> show sold count ?>
                                         <i class="fa fa-chart-line"></i> Bán: <?= $meta ?>
                                     <?php endif; ?>
                                 </div>
                             </li>
                         <?php endforeach; ?>
                     </ul>
+
                     <?php if ($favTotalPages > 1): ?>
-                        <div class="fav-pagination">
-                            <?php for ($p = 1; $p <= $favTotalPages; $p++): ?>
-                                <?php
-                                    $qs = $_GET;
-                                    $qs['fav_page'] = $p;
-                                    $link = $_SERVER['PHP_SELF'] . '?' . http_build_query($qs);
-                                ?>
-                                <?php if ($p == $favPage): ?>
+                        <div class="fav-pagination" aria-label="Phân trang sản phẩm">
+                            <?php
+                                $pages = paginationSequence($favPage, $favTotalPages, 2, 2);
+                                foreach ($pages as $p):
+                                    if ($p === '...'):
+                            ?>
+                                <span class="page-ellipsis">…</span>
+                            <?php
+                                    else:
+                                        $qs = $_GET;
+                                        $qs['fav_page'] = $p;
+                                        $qs['fav_tab'] = $favTab;
+                                        $qs['chart'] = $currentChartParam;
+                                        $link = $_SERVER['PHP_SELF'] . '?' . http_build_query($qs);
+                                        if ($p == $favPage):
+                            ?>
                                     <span class="page-current"><?= $p ?></span>
                                 <?php else: ?>
                                     <a class="page-link" href="<?= htmlspecialchars($link, ENT_QUOTES) ?>"><?= $p ?></a>
                                 <?php endif; ?>
-                            <?php endfor; ?>
+                            <?php
+                                    endif;
+                                endforeach;
+                            ?>
                         </div>
                     <?php endif; ?>
-
                 </div>
             <?php endif; ?>
         </div>
@@ -532,209 +655,281 @@ body{ display:flex; background:#f5f5f5; color:#333; min-height:100vh; }
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
 <script>
-/* ================== PHP -> JS DATA ================== */
-// dữ liệu THEO NGÀY (đã query ở PHP)
-const chartLabels = <?= json_encode($chartLabels) ?>;
-const revenueData = <?= json_encode($chartRevenue) ?>;
-const ordersData  = <?= json_encode($chartOrders) ?>;
-
-// dữ liệu cho chart danh mục
-const catNamesData  = <?= json_encode($categoryNames) ?>;
-const catCountsData = <?= json_encode($productCounts) ?>;
-
-// tab mặc định
+// PHP -> JS data
+const monthsDataRaw   = <?= json_encode($monthsLabels) ?>; // ['01','02',...]
+const monthsLabelsReadable = monthsDataRaw.map(m => 'Tháng ' + parseInt(m,10));
+const revenueDataFull = <?= json_encode($revenueByMonth) ?>;
+const ordersDataFull  = <?= json_encode($ordersByMonth) ?>;
+const catNamesData    = <?= json_encode($categoryNames) ?>;
+const catCountsData   = <?= json_encode($productCounts) ?>;
+const orderedStatuses = <?= json_encode(array_values($orderedStatuses)) ?>;
+const statusMonthCounts = <?= json_encode($statusMonthCounts) ?>;
 const initialChart = <?= json_encode($chartDefault) ?>;
 
-/* ================== HELPERS ================== */
+// color map for statuses (adjust if needed)
+const statusColorMap = {
+    'Chờ xác nhận': '#9e7cf7',
+    'Đang xử lý': '#f6c84c',
+    'Đơn hàng đang được giao': '#ff8a4c',
+    'Đã giao hàng': '#2ecc71',
+    'Hủy đơn hàng': '#f44336'
+};
+
+function randomColor(i){
+    const palette = ['#8E5DF5','#A64FF2','#F6C84C','#FF8A4C','#2ECC71','#F44336','#00A3FF'];
+    return palette[i % palette.length];
+}
+
 function formatVND(value){
     if (value === null || value === undefined) return value;
     const v = Math.round(Number(value));
     return v.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".") + " ₫";
 }
 
-/* ================== REVENUE CHART (THEO NGÀY) ================== */
+/* ---------- REVENUE CHART ---------- */
 const revCtx = document.getElementById('revenueChart').getContext('2d');
-
 const revenueChart = new Chart(revCtx, {
     type: 'bar',
     data: {
-        labels: chartLabels,
+        labels: monthsLabelsReadable,
         datasets: [
-            {
-                label: 'Doanh thu',
-                data: revenueData,
-                backgroundColor: '#8E5DF5',
-                borderRadius: 8,
-                yAxisID: 'y_left'
-            },
-            {
-                label: 'Số đơn',
-                data: ordersData,
-                backgroundColor: '#2ECC71',
-                borderRadius: 8,
-                yAxisID: 'y_right'
-            }
+            { label: 'Doanh thu', data: revenueDataFull, backgroundColor: '#8E5DF5', borderRadius:8, maxBarThickness:44, yAxisID:'y_left' },
+            { label: 'Tổng đơn', data: ordersDataFull, backgroundColor: '#2ECC71', borderRadius:8, maxBarThickness:28, yAxisID:'y_right' }
         ]
     },
     options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        interaction: { mode: 'index', intersect: false },
-        plugins: {
-            legend: {
-                position: 'top',
-                labels: {
-                    usePointStyle: true,
-                    pointStyle: 'rectRounded',
-                    padding: 12
-                }
-            },
-            tooltip: {
-                callbacks: {
-                    label: function(ctx){
-                        const lab = ctx.dataset.label || '';
-                        const val = ctx.parsed.y ?? 0;
-                        return lab === 'Doanh thu'
-                            ? lab + ': ' + formatVND(val)
-                            : lab + ': ' + val;
-                    }
-                }
-            }
+        responsive:true,
+        maintainAspectRatio:false,
+        interaction:{ mode:'index', intersect:false },
+        plugins:{
+            legend:{ position:'top', labels:{ usePointStyle:true, pointStyle:'rectRounded', padding:12, font:{ size:12 } } },
+            tooltip:{ callbacks:{ label:function(ctx){
+                const lab = ctx.dataset.label||'';
+                const val = ctx.parsed.y ?? ctx.raw ?? 0;
+                return lab === 'Doanh thu' ? lab + ': ' + formatVND(val) : lab + ': ' + val;
+            } } }
         },
-        scales: {
-            x: {
-                grid: { display: false }
-            },
-            y_left: {
-                type: 'linear',
-                position: 'left',
-                beginAtZero: true,
-                ticks: {
-                    callback: v => formatVND(v)
-                }
-            },
-            y_right: {
-                type: 'linear',
-                position: 'right',
-                beginAtZero: true,
-                grid: { display: false }
-            }
-        }
+        scales:{
+            x:{ stacked:false, grid:{ display:false }, ticks:{ autoSkip:true, maxRotation:0, minRotation:0 } },
+            y_left:{ type:'linear', display:true, position:'left', grid:{ color:'rgba(0,0,0,0.06)', drawBorder:false }, ticks:{ callback:function(v){ return formatVND(v);} }, beginAtZero:true },
+            y_right:{ type:'linear', display:true, position:'right', grid:{ display:false }, ticks:{ callback:function(v){ return v; } }, beginAtZero:true }
+        },
+        layout:{ padding:{ top:6, bottom:6 } }
     }
 });
 
-/* ================== PRODUCT CATEGORY CHART ================== */
+/* ---------- PRODUCT CATEGORY CHART (no months) ---------- */
 const productCtx = document.getElementById('productChart').getContext('2d');
-
-const productChart = new Chart(productCtx, {
+let productChart = new Chart(productCtx, {
     type: 'bar',
     data: {
         labels: catNamesData,
-        datasets: [
-            {
-                label: 'Số lượng sản phẩm',
-                data: catCountsData,
-                backgroundColor: '#8E5DF5',
-                borderRadius: 10,
-                maxBarThickness: 60
-            }
-        ]
+        datasets: [{ label:'Số lượng sản phẩm', data: catCountsData, backgroundColor: '#8E5DF5', borderRadius:10, maxBarThickness:60 }]
     },
     options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
-        scales: {
-            x: {
-                grid: { display: false },
-                ticks: { maxRotation: 45, minRotation: 30 }
-            },
-            y: {
-                beginAtZero: true,
-                ticks: { precision: 0 }
-            }
-        }
+        responsive:true, maintainAspectRatio:false,
+        plugins:{ legend:{ display:false } },
+        scales:{ x:{ grid:{ display:false }, ticks:{ autoSkip:false, maxRotation:45, minRotation:30 } }, y:{ beginAtZero:true, grid:{ color:'rgba(0,0,0,0.03)' }, ticks:{ precision:0 } } }
     }
 });
 
-/* ================== PRODUCT FILTER ================== */
-const categorySel  = document.getElementById('categorySel');
-const catLabelWrap = document.getElementById('catLabelWrap');
+/* ---------- ORDERS CHART (status per month) ---------- */
+const ordersCtx = document.getElementById('ordersChart').getContext('2d');
+
+function buildStatusDatasets(statuses, monthCounts) {
+    const datasets = [];
+    statuses.forEach((st, i) => {
+        const col = statusColorMap[st] || randomColor(i);
+        datasets.push({
+            label: st,
+            data: monthCounts[st] || new Array(monthsLabelsReadable.length).fill(0),
+            backgroundColor: col,
+            borderRadius:8,
+            maxBarThickness:28
+        });
+    });
+    return datasets;
+}
+
+let ordersChart = new Chart(ordersCtx, {
+    type: 'bar',
+    data: {
+        labels: monthsLabelsReadable,
+        datasets: buildStatusDatasets(orderedStatuses, statusMonthCounts)
+    },
+    options: {
+        responsive:true, maintainAspectRatio:false,
+        interaction:{ mode:'index', intersect:false },
+        plugins:{ legend:{ position:'top', labels:{ boxWidth:12 } }, tooltip:{ callbacks:{ label:function(ctx){ return ctx.dataset.label + ': ' + (ctx.parsed.y || 0); } } } },
+        scales:{ x:{ stacked:false, grid:{ display:false }, ticks:{ autoSkip:true } }, y:{ beginAtZero:true, ticks:{ stepSize:1, precision:0 } } }
+    }
+});
+
+// adjust orders chart Y max so bars are not too stretched
+function adjustOrdersYAxis() {
+    const dataSets = ordersChart.data.datasets || [];
+    let maxVal = 0;
+    dataSets.forEach(ds => {
+        if (Array.isArray(ds.data)) {
+            ds.data.forEach(v => { if (v > maxVal) maxVal = v; });
+        }
+    });
+    const suggested = Math.max(1, Math.ceil((maxVal + 1) / 1) ); // integer upper bound
+    ordersChart.options.scales.y.suggestedMax = suggested + 1;
+    ordersChart.update();
+}
+
+/* ---------- HELPERS ---------- */
+function takeLastMonths(arr, n) {
+    if (!Array.isArray(arr)) return [];
+    if (n >= arr.length) return arr.slice();
+    return arr.slice(arr.length - n);
+}
+
+/* ---------- UPDATE FUNCTIONS ---------- */
+function updateRevenueChartDisplay(monthsCount) {
+    monthsCount = parseInt(monthsCount) || 12;
+    const labels = takeLastMonths(monthsLabelsReadable, monthsCount);
+    const rev = takeLastMonths(revenueDataFull, monthsCount);
+    const ord = takeLastMonths(ordersDataFull, monthsCount);
+
+    revenueChart.data.labels = labels;
+    revenueChart.data.datasets[0].data = rev;
+    revenueChart.data.datasets[1].data = ord;
+    revenueChart.update();
+}
 
 function updateProductChart(categoryName) {
     if (!categoryName || categoryName === '__all') {
         productChart.data.labels = catNamesData;
-        productChart.data.datasets[0].data = catCountsData;
+        productChart.data.datasets = [{ label:'Số lượng sản phẩm', data: catCountsData, backgroundColor: '#8E5DF5', borderRadius:10, maxBarThickness:60 }];
     } else {
         const idx = catNamesData.indexOf(categoryName);
-        productChart.data.labels = [categoryName];
-        productChart.data.datasets[0].data = [idx >= 0 ? catCountsData[idx] : 0];
+        if (idx === -1) {
+            productChart.data.labels = [categoryName];
+            productChart.data.datasets = [{ label:'Số lượng sản phẩm', data: [0], backgroundColor: '#8E5DF5', borderRadius:10, maxBarThickness:80 }];
+        } else {
+            productChart.data.labels = [catNamesData[idx]];
+            productChart.data.datasets = [{ label:'Số lượng sản phẩm', data: [catCountsData[idx]], backgroundColor: '#8E5DF5', borderRadius:10, maxBarThickness:80 }];
+        }
     }
     productChart.update();
 }
 
-categorySel?.addEventListener('change', function(){
-    updateProductChart(this.value);
-});
+function updateOrdersChartDisplay(monthsCount, statusFilter) {
+    monthsCount = parseInt(monthsCount) || 12;
+    const labels = takeLastMonths(monthsLabelsReadable, monthsCount);
+    ordersChart.data.labels = labels;
 
-/* ================== TAB SHOW / HIDE ================== */
-const revenueWrapper = document.getElementById('revenueChartWrapper');
-const productWrapper = document.getElementById('productChartWrapper');
-const ordersWrapper  = document.getElementById('ordersChartWrapper');
+    if (statusFilter && statusFilter !== '__all') {
+        const ds = [{
+            label: statusFilter,
+            data: takeLastMonths(statusMonthCounts[statusFilter] || new Array(12).fill(0), monthsCount),
+            backgroundColor: statusColorMap[statusFilter] || '#8E5DF5',
+            borderRadius:8,
+            maxBarThickness:50
+        }];
+        ordersChart.data.datasets = ds;
+    } else {
+        const ds = [];
+        orderedStatuses.forEach((st, i) => {
+            const dataAll = statusMonthCounts[st] || new Array(12).fill(0);
+            ds.push({
+                label: st,
+                data: takeLastMonths(dataAll, monthsCount),
+                backgroundColor: statusColorMap[st] || randomColor(i),
+                borderRadius:8,
+                maxBarThickness:28
+            });
+        });
+        ordersChart.data.datasets = ds;
+    }
+    ordersChart.update();
+    // adjust Y
+    setTimeout(adjustOrdersYAxis, 50);
+}
 
-const dateFilterBox = document.getElementById('dateFilterBox');
+/* ---------- DOM & UI ---------- */
+const revenueWrapper  = document.getElementById('revenueChartWrapper');
+const productWrapper  = document.getElementById('productChartWrapper');
+const ordersWrapper   = document.getElementById('ordersChartWrapper');
+const monthRangeSel   = document.getElementById('monthRange');
+const orderStatusSel  = document.getElementById('orderStatusSel');
+const categorySel     = document.getElementById('categorySel');
+const monthLabel      = document.getElementById('monthLabel');
+const monthNote       = document.getElementById('monthNote');
+const catLabelWrap    = document.getElementById('catLabelWrap');
 
 function showOnly(which){
     revenueWrapper.style.display = which === 'revenue' ? 'block' : 'none';
     productWrapper.style.display = which === 'product' ? 'block' : 'none';
     ordersWrapper.style.display  = which === 'orders'  ? 'block' : 'none';
 
-    //CHỈ HIỆN CHỌN NGÀY Ở DOANH THU
-    if (which === 'revenue') {
-        dateFilterBox.style.display = 'flex';
-    } else {
-        dateFilterBox.style.display = 'none';
-    }
-
-    //CHỈ HIỆN CHỌN DANH MỤC Ở BIỂU ĐỒ SẢN PHẨM
+    // month selector visible for revenue & orders, hidden for product
     if (which === 'product') {
-        catLabelWrap.style.display = '';
+        monthRangeSel.style.display = 'none';
+        monthLabel.style.display = 'none';
+        monthNote.style.display = 'none';
+        orderStatusSel.style.display = 'none';
+        catLabelWrap.style.display = ''; // may hide later if no categories
         categorySel.style.display = '';
-    } else {
+    } else if (which === 'orders') {
+        monthRangeSel.style.display = '';
+        monthLabel.style.display = '';
+        monthNote.style.display = '';
+        orderStatusSel.style.display = '';
+        catLabelWrap.style.display = 'none';
+        categorySel.style.display = 'none';
+    } else { // revenue
+        monthRangeSel.style.display = '';
+        monthLabel.style.display = '';
+        monthNote.style.display = '';
+        orderStatusSel.style.display = 'none';
         catLabelWrap.style.display = 'none';
         categorySel.style.display = 'none';
     }
 
-    setTimeout(() => {
-        revenueChart.resize();
-        productChart.resize();
-    }, 100);
-}
-
-
-/* ================== INIT ================== */
-window.addEventListener('load', function(){
-    updateProductChart(categorySel?.value || '__all');
-    showOnly(initialChart);
-});
-
-document.getElementById('applyDate').addEventListener('click', function () {
-    const from = document.getElementById('fromDate').value;
-    const to   = document.getElementById('toDate').value;
-
-    if (!from || !to) {
-        alert('Vui lòng chọn đủ Từ ngày và Đến ngày');
-        return;
+    // if category list is empty hide its label & select entirely
+    if (!Array.isArray(catNamesData) || catNamesData.length === 0) {
+        catLabelWrap.style.display = 'none';
+        categorySel.style.display = 'none';
     }
 
-    const params = new URLSearchParams(window.location.search);
-    params.set('from', from);
-    params.set('to', to);
-    params.set('chart', 'revenue'); // luôn quay về chart doanh thu
+    // ensure charts resized
+    setTimeout(() => {
+        try { revenueChart.resize(); } catch(e){}
+        try { productChart.resize(); } catch(e){}
+        try { ordersChart.resize(); } catch(e){}
+    }, 120);
+}
 
-    window.location.search = params.toString();
+/* ---------- EVENTS ---------- */
+monthRangeSel.addEventListener('change', function(){
+    const m = this.value;
+    updateRevenueChartDisplay(m);
+    updateOrdersChartDisplay(m, orderStatusSel.value);
+});
+
+orderStatusSel.addEventListener('change', function(){
+    const m = monthRangeSel.value;
+    updateOrdersChartDisplay(m, this.value);
+});
+
+categorySel.addEventListener('change', function(){
+    updateProductChart(this.value);
+});
+
+/* ---------- INIT ---------- */
+window.addEventListener('load', function(){
+    const selVal = parseInt(monthRangeSel.value, 10) || 12;
+    updateRevenueChartDisplay(selVal);
+    updateOrdersChartDisplay(selVal, orderStatusSel.value);
+    updateProductChart(categorySel.value);
+
+    if (initialChart === 'product') showOnly('product');
+    else if (initialChart === 'orders') showOnly('orders');
+    else showOnly('revenue');
 });
 </script>
-
 </body>
 </html>
